@@ -9,6 +9,9 @@ test:
 smoke-test:
 	uv run python scripts/smoke_test.py
 
+smoke-test-llm:
+	uv run python scripts/smoke_test_llm.py
+
 lint:
 	uv run ruff check .
 	npx pyright

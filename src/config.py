@@ -72,7 +72,7 @@ class Settings(BaseSettings):
     # LLM Settings (For Hari 4 Smart Research)
     llm_provider: str = Field(default="gemini", alias="LLM_PROVIDER")
     llm_api_key: str | None = Field(default=None, alias="LLM_API_KEY")
-    llm_model: str = Field(default="gemini-2.5-flash", alias="LLM_MODEL")
+    llm_model: str = Field(default="gemini-3.5-flash-lite", alias="LLM_MODEL")
 
     # Logging
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
