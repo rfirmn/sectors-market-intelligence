@@ -5,38 +5,61 @@
 
 Sistem AI berbasis riset kuantitatif dan kualitatif yang mengidentifikasi **discrepancy (anomali/peluang)** antara performa fundamental emiten di Bursa Efek Indonesia (IDX) dengan valuasi pasarnya, memverifikasinya melalui bukti tekstual terkurasi dan data mikrostruktur bursa (*broker/foreign flow*), serta menghasilkan **Investment Memo interaktif** yang tahan uji numerik.
 
-### Core Loop
+---
+
+### Core Loop Architecture
 $$\text{NUMERICAL (Engine)} \longrightarrow \text{LINGUISTIC (LLM/Research)} \longrightarrow \text{NUMERICAL (Challenge)}$$
 
+```
+market-intelligence/
+├── src/                            # Core Backend Pipeline & API
+│   ├── client/                     # [Hari 1] Sectors API Client, Models & Local Snapshot Cache
+│   ├── engine/                     # [Hari 2] Market State Engine (8 Metrik, Winsorizing, Median/MAD)
+│   ├── discovery/                  # [Hari 3] Opportunity Discovery & Relational Ranking Engine
+│   ├── research/                   # [Hari 4] Smart Research Engine (Mosaic Text Synthesis via Gemini)
+│   ├── confirmation/               # [Hari 4] Confirmation Layer (Net Foreign Flow Direction)
+│   ├── challenge/                  # [Hari 5] Numerical Challenge Engine (Deterministic Stress Testing)
+│   ├── memo/                       # [Hari 5] Opportunity Memo Synthesizer (Markdown / JSON)
+│   ├── api/                        # [Hari 5-6] FastAPI Server (Serving Endpoints for UI)
+│   └── config.py                   # Pydantic Settings & Environment Manager
+├── frontend/                       # [Hari 6] Modern Web UI (Dashboard 3 Area)
+├── data/                           # Data Snapshots & Test Fixtures
+│   ├── cache/sectors/              # File-based JSON Snapshots (Demo Reliability §6.10)
+│   └── fixtures/                   # Golden demo fixtures
+├── docs/                           # Dokumentasi & API Specs
+│   ├── onboarding.md               # Orientasi cepat developer
+│   ├── project.md                  # PRD & landasan matematis
+│   ├── timeline.md                 # Jadwal sprint 7 hari
+│   └── docs_sectors_api/           # Katalog 70 endpoint Sectors API v2
+├── scripts/                        # Utility & CLI tools (smoke_test.py, scan runner)
+├── tests/                          # Automated Pytest suite with RESpx offline mocks
+├── Makefile                        # Quick development commands
+└── pyproject.toml                  # Dependencies & tooling configuration (uv)
+```
+
 ---
 
-### Setup Cepat
+### Perintah Cepat (Makefile)
 
-1. **Install Dependensi:**
-   ```bash
-   uv sync
-   ```
-
-2. **Konfigurasi Lingkungan:**
-   Salin `.env.example` ke `.env` dan masukkan `SECTORS_API_KEY`:
-   ```bash
-   cp .env.example .env
-   ```
-
-3. **Jalankan Smoke Test Konektivitas:**
-   ```bash
-   uv run python scripts/smoke_test.py
-   ```
-
-4. **Jalankan Test Suite:**
-   ```bash
-   uv run pytest -v
-   ```
+| Command | Deskripsi |
+|---|---|
+| `make install` | Install semua dependensi via `uv` |
+| `make test` | Jalankan seluruh unit test suite (`pytest`) |
+| `make smoke-test` | Jalankan smoke test live konektivitas Sectors API |
+| `make dev-api` | Jalankan server backend FastAPI (`http://localhost:8000`) |
+| `make lint` | Validasi kode dengan `ruff` dan `pyright` |
+| `make format` | Otomatis rapikan format kode |
 
 ---
 
-### Dokumentasi Lengkap
-* [Panduan Onboarding](docs/onboarding.md)
-* [Spesifikasi Teknis & Formula](docs/project.md)
-* [Timeline Pengembangan](docs/timeline.md)
-* [Katalog Sectors API v2](docs/docs_sectors_api/README.md)
+### Memulai Pengujian
+
+1. Masukkan API Key Sectors di `.env`:
+   ```env
+   SECTORS_API_KEY=your_actual_key_here
+   ```
+
+2. Jalankan Smoke Test:
+   ```bash
+   make smoke-test
+   ```

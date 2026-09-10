@@ -5,12 +5,14 @@ description = "Market Intelligence Agent for Sectors Hackathon 2026: Numerical-L
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "fastapi>=0.115.0",
     "httpx>=0.28.0",
     "pydantic>=2.10.0",
     "pydantic-settings>=2.7.0",
     "python-dotenv>=1.0.1",
     "rich>=13.9.0",
     "tenacity>=9.0.0",
+    "uvicorn>=0.34.0",
 ]
 
 [dependency-groups]
