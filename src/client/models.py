@@ -1,4 +1,7 @@
-"""Pydantic data models for Sectors API responses."""
+"""Pydantic data models for Sectors API v2 responses.
+
+Refined against live Sectors API responses.
+"""
 
 from typing import Any
 
@@ -14,31 +17,34 @@ class APIModel(BaseModel):
 # 1. Taxonomy & Screener
 class SubsectorInfo(APIModel):
     sector: str
+    subsector: str | None = None
     sub_sectors: list[str] = Field(default_factory=list)
 
 
-class CompanyOverview(APIModel):
+class CompanyItem(APIModel):
     symbol: str
     company_name: str | None = None
-    sector: str | None = None
-    sub_sector: str | None = None
-    market_cap: float | None = None
-    pe: float | None = None
-    pb: float | None = None
-    close: float | None = None
+
+
+class CompaniesResponse(APIModel):
+    results: list[CompanyItem] = Field(default_factory=list)
+    pagination: dict[str, Any] = Field(default_factory=dict)
 
 
 # 2. Financials (Quarterly)
 class QuarterlyFinancial(APIModel):
-    year: int | None = None
-    quarter: int | None = None
-    period: str | None = None
+    symbol: str | None = None
+    date: str | None = None
     revenue: float | None = None
+    operating_pnl: float | None = None
     earnings: float | None = None
-    operating_profit: float | None = None
     gross_profit: float | None = None
+    cost_of_revenue: float | None = None
     total_equity: float | None = None
     total_assets: float | None = None
+    total_debt: float | None = None
+    ebit: float | None = None
+    ebitda: float | None = None
 
 
 # 3. Daily Transactions & Price
@@ -77,9 +83,14 @@ class NewsItem(APIModel):
     summary: str | None = None
 
 
-# 5. Foreign Flow & Broker Summary (Confirmation Layer)
+# 5. Foreign Flow (Confirmation Layer)
 class ForeignFlowItem(APIModel):
-    date: str | None = None
-    foreign_buy: float | None = None
-    foreign_sell: float | None = None
-    net_foreign: float | None = None
+    date: str
+    net_foreign_inflow: float | None = None
+
+
+class ForeignFlowResponse(APIModel):
+    symbol: str
+    start: str | None = None
+    end: str | None = None
+    data: list[ForeignFlowItem] = Field(default_factory=list)
