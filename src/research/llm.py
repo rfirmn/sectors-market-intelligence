@@ -4,9 +4,8 @@ Connects to Google Generative Language API v1beta using HTTPX.
 Used in Hari 4 (Smart Research & Mosaic Synthesis) and Hari 5 (Thesis Engine).
 """
 
-import asyncio
 import logging
-from typing import Optional
+from typing import Any
 
 import httpx
 
@@ -20,8 +19,8 @@ class GeminiClient:
 
     def __init__(
         self,
-        api_key: Optional[str] = None,
-        model: Optional[str] = None,
+        api_key: str | None = None,
+        model: str | None = None,
         timeout_seconds: float = 30.0,
     ):
         self.api_key = api_key or settings.llm_api_key
@@ -34,10 +33,10 @@ class GeminiClient:
     def _build_payload(
         self,
         prompt: str,
-        system_instruction: Optional[str] = None,
+        system_instruction: str | None = None,
         temperature: float = 0.2,
-    ) -> dict:
-        payload = {
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {
                 "temperature": temperature,
@@ -45,15 +44,13 @@ class GeminiClient:
             },
         }
         if system_instruction:
-            payload["systemInstruction"] = {
-                "parts": [{"text": system_instruction}]
-            }
+            payload["systemInstruction"] = {"parts": [{"text": system_instruction}]}
         return payload
 
     def generate_text(
         self,
         prompt: str,
-        system_instruction: Optional[str] = None,
+        system_instruction: str | None = None,
         temperature: float = 0.2,
     ) -> str:
         """Synchronously generate text using Gemini model."""
@@ -82,7 +79,7 @@ class GeminiClient:
     async def generate_text_async(
         self,
         prompt: str,
-        system_instruction: Optional[str] = None,
+        system_instruction: str | None = None,
         temperature: float = 0.2,
     ) -> str:
         """Asynchronously generate text using Gemini model."""
