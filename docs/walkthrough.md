@@ -7,21 +7,22 @@ Dokumen ini mencatat rekam jejak pengerjaan proyek secara lengkap, transparan, d
 
 ## 1. Status Proyek Saat Ini (Current Progress Tracker)
 
-* **Fase Berjalan**: **Hari 1 Selesai (100%)** $\longrightarrow$ **Siap Memulai Hari 2**
+* **Fase Berjalan**: **Hari 2 Selesai (100%)** $\longrightarrow$ **Siap Memulai Hari 3**
 * **Repository Remote**: [`https://github.com/rfirmn/sectors-market-intelligence.git`](https://github.com/rfirmn/sectors-market-intelligence.git) (Branch `main` ter-sync)
-* **Unit Tests Status**: **15 / 15 Tests LULUS (100% Pass Rate)**
+* **Unit Tests Status**: **84 / 84 Tests LULUS (100% Pass Rate, 0 Warnings)**
 * **Linter & Type Checker**: `ruff` (0 error) & `pyright` (0 error)
 * **Konektivitas Live API**:
   * **Sectors Financial API v2**: **TERVERIFIKASI LIVE** (7 Endpoint lolos uji)
   * **Google Gemini LLM**: **TERVERIFIKASI LIVE** (`gemini-3.5-flash-lite`, 1.8s)
+  * **Market State Engine**: **TERVERIFIKASI LIVE** (`make smoke-test-engine` ASII Cross-Check PASS)
 
 ### Matriks Progres Sprint 7 Hari
 
 | Fase / Hari | Fokus Utama | Target Deliverable | Status |
 |---|---|---|:---:|
 | **HARI 1** | **Fondasi, Arsitektur & Integrasi Data** | Setup repo, Client Sectors API, Cache Snapshot, Test Suite, LLM Client | **SELESAI (100%)** |
-| **HARI 2** | **Market State Engine & Normalisasi** | Eksklusi Finansial, 8 Metrik Keuangan, Winsorizing 1%/99%, Median/MAD, `peer_z` | **BERIKUTNYA (READY)** |
-| **HARI 3** | **Discovery Engine & Ranking** | Formula Discrepancy, Threshold 1.0 & 1.5 a priori, Priority Score & Ranking | Menunggu Hari 2 |
+| **HARI 2** | **Market State Engine & Normalisasi** | Eksklusi Finansial, 8 Metrik Keuangan, Winsorizing 1%/99%, Median/MAD, `peer_z` | **SELESAI (100%)** |
+| **HARI 3** | **Discovery Engine & Ranking** | Formula Discrepancy, Threshold 1.0 & 1.5 a priori, Priority Score & Ranking | **BERIKUTNYA (READY)** |
 | **HARI 4** | **Smart Research & Confirmation** | Mosaic LLM Evidence (Filings, Actions, News), Net Foreign Flow Direction Check | Menunggu Hari 3 |
 | **HARI 5** | **Thesis, Stress Test & Memo** | Thesis Engine, Numerical Challenge (Base/Conservative/Stress), Memo Generator | Menunggu Hari 4 |
 | **HARI 6** | **Frontend UI (Dashboard 3 Area)** | Overview Market Scan, Opportunity Feed, Interactive Memo Viewer (FastAPI + SPA) | Menunggu Hari 5 |
@@ -173,22 +174,54 @@ make format
 
 ---
 
-## 6. Rencana Kerja Selanjutnya: HARI 2
+## 6. Rincian Pekerjaan yang Telah Diselesaikan (Hari 2)
 
-Pada fase berikutnya, fokus berpindah ke **Market State Engine & Normalisasi Statistik**:
+### A. Data Contracts & Models (`src/engine/models.py`)
+* `MetricSet`: Representasi 8 metrik finansial mentah (`revenue_growth`, `earnings_growth`, `operating_margin`, `margin_change`, `roe_ttm`, `price_return`, `pe_ttm`, `pb`).
+* `PeerZScores`: Representasi skor z-score peer-normalized subsektor.
+* `CompanyState`: Struktur agregasi final per emiten dengan provenance lengkap (`growth_period`, `growth_method`, `price_period`, `data_timestamp`).
+* `SubsectorProfile` & `MetricDistribution`: Metadata statistik subsektor (median, MAD, scaled_MAD, bounds persentil 1%/99%, n_valid, flag winsorized).
 
-* **Task T2.1**: Implementasi parser taksonomi & filter eliminasi sektor keuangan (perbankan, asuransi, multifinance sesuai aturan §6.1).
-* **Task T2.2**: Implementasi kalkulator 8 metrik finansial inti:
-  1. Revenue Growth (YoY)
-  2. Earnings Growth (YoY)
-  3. Operating Margin Change (pp)
-  4. Return on Equity (ROE)
-  5. Relative Valuation (PE/PB vs median peer)
-  6. Price Return (periode observasi)
-  7. Peer-relative Growth
-  8. Peer-relative Price Performance
-* **Task T2.3**: Implementasi modul statistik robust terhadap outlier small-cap IDX:
-  * Winsorizing persentil 1% & 99%
-  * Median subsektor
-  * Median Absolute Deviation (MAD)
-* **Task T2.4**: Komputasi skor $\text{peer\_z}(metric) = \frac{\text{metric} - \text{median}}{\text{MAD}}$ dan perakitan struktur data `CompanyState`.
+### B. Robust Statistics Engine (`src/engine/stats.py`)
+* Implementasi pure-Python tanpa ketergantungan numpy/scipy:
+  * Linear interpolation percentile.
+  * Winsorizing persentil 1% & 99% (guard sample minimum $n \ge 5$).
+  * Median & MAD (Median Absolute Deviation) dengan consistency factor $k = 1.4826$ (Iglewicz & Hoaglin 1993) agar $1.4826 \times \text{MAD}$ menjadi estimator robust dari $\sigma$.
+  * Fallback scale saat $\text{MAD} = 0$: $0.01 \times |\text{median}|$ untuk menghindari pembagian dengan nol.
+  * Guard sample kecil ($n < 3$ menghasilkan $z = 0.0$ konservatif).
+
+### C. Taxonomy & Universe Builder (`src/engine/taxonomy.py`)
+* Filter ketat eksklusi sektor finansial (`financials`: perbankan, asuransi, pembiayaan) sesuai spesifikasi §6.1.
+* Stripping otomatis suffix `.JK` dari ticker screener (`ASII.JK` $\to$ `ASII`).
+* Pagination handling untuk query subsektor perusahaan.
+
+### D. Financial Metrics Calculator (`src/engine/metrics.py`)
+* Strategi pertumbuhan adaptif: YoY jika tersedia data pembanding 4 kuartal sebelumnya, fallback mulus ke QoQ jika data terbatas.
+* TTM Aggregation: ROE dan PE dihitung berbasis akumulasi laba 4 kuartal berjalan (TTM) dibagi ekuitas terkini.
+* Penanganan komprehensif edge case numerik: denominator nol, laba rugi berbalik (loss-to-profit), ekuitas negatif, dan observasi harga minim.
+
+### E. Pipeline Orchestrator & Smoke Test Engine (`src/engine/market_state_engine.py`)
+* Mengintegrasikan rantai Taksonomi $\to$ Data Fetching $\to$ Kalkulasi Metrik $\to$ Normalisasi Subsektor.
+* Verifikasi cross-check numerik ASII (`make smoke-test-engine`):
+  * Revenue Growth (QoQ): `+0.73%` (Cocok)
+  * Earnings Growth (QoQ): `+14.24%` (Cocok)
+  * Operating Margin: `10.23%` (Cocok)
+  * Margin Change: `+2.21 pp` (Cocok)
+  * ROE TTM: `10.28%` (Cocok)
+  * PE TTM: `6.67x` (Cocok)
+  * All Peer Z-scores: `0.0000` (Kompak sesuai teori n=1)
+
+---
+
+## 7. Rencana Kerja Selanjutnya: HARI 3
+
+Fokus berikutnya adalah **Opportunity Discovery, Ranking & Pengujian Universe**:
+
+* **Task T3.1**: Implementasi penghitungan `fundamental_z` (rata-rata z-score pertumbuhan pendapatan, laba, dan perubahan margin) dan `price_z`.
+* **Task T3.2**: Implementasi aturan discrepancy: $\text{discrepancy} = \text{fundamental\_z} - \text{price\_z}$ dan klasifikasi a priori:
+  * $\text{discrepancy} > 1.5 \longrightarrow$ **HIGH Priority**
+  * $1.0 < \text{discrepancy} \le 1.5 \longrightarrow$ **MEDIUM Priority**
+  * $\text{discrepancy} \le 1.0 \longrightarrow$ Filtered out / non-candidate
+* **Task T3.3**: Priority Score & Ranking Engine untuk memilih top kandidat peluang pasar modal.
+* **Task T3.4**: Penguncian parameter matematis a priori di dokumentasi/README.
+* **Task T3.5**: Scan universe non-finansial IDX untuk menemukan 2–3 emiten riil dengan dislokasi harga nyata.

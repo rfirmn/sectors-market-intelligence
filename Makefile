@@ -1,4 +1,4 @@
-.PHONY: install test smoke-test lint format dev-api clean
+.PHONY: install test smoke-test lint format dev-api clean smoke-test-engine
 
 install:
 	uv sync
@@ -11,6 +11,9 @@ smoke-test:
 
 smoke-test-llm:
 	uv run python scripts/smoke_test_llm.py
+
+smoke-test-engine:
+	uv run python scripts/smoke_test_engine.py
 
 lint:
 	uv run ruff check .
