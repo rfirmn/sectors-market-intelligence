@@ -79,6 +79,7 @@ Repositori ini telah memiliki dokumentasi teknis yang lengkap dan tersusun rapi:
 ```
 market-intelligence/
 └── docs/
+    ├── walkthrough.md                  # [CHECKPOINT] Rekam jejak progres pengerjaan & status pengujian live
     ├── project.md                      # [PRD UTAMA] Spesifikasi arsitektur, rumus matematika, dan requirements
     ├── timeline.md                     # [ROADMAP] Jadwal sprint 7 hari & pembagian tugas per modul
     ├── onboarding.md                   # [DOKUMEN INI] Ringkasan kilat untuk orientasi tim & developer
@@ -97,6 +98,7 @@ market-intelligence/
 ```
 
 ### Panduan Membuka Dokumen Sesuai Kebutuhan:
+* Ingin melihat checkpoint pekerjaan dan rekam jejak pengujian live? Buka [walkthrough.md](file:///Users/rio/Documents/RIO/Pemrograman/my_product/market-intelligence/docs/walkthrough.md).
 * Ingin memahami formula matematika atau aturan bisnis? Buka [project.md](file:///Users/rio/Documents/RIO/Pemrograman/my_product/market-intelligence/docs/project.md).
 * Ingin tahu urutan pengerjaan task harian? Buka [timeline.md](file:///Users/rio/Documents/RIO/Pemrograman/my_product/market-intelligence/docs/timeline.md).
 * Ingin tahu URL, parameter, atau format JSON Sectors? Buka file terkait di [docs_sectors_api/](file:///Users/rio/Documents/RIO/Pemrograman/my_product/market-intelligence/docs/docs_sectors_api).
@@ -106,7 +108,7 @@ market-intelligence/
 
 ## 5. Ringkasan Eksekusi Sprint 7 Hari
 
-Gunakan pembagian hari dari [timeline.md](file:///Users/rio/Documents/RIO/Pemrograman/my_product/market-intelligence/timeline.md) sebagai panduan progres harian:
+Gunakan pembagian hari dari [timeline.md](file:///Users/rio/Documents/RIO/Pemrograman/my_product/market-intelligence/docs/timeline.md) sebagai panduan progres harian:
 
 * **Hari 1: Fondasi & Integrasi Data Sectors**
   Setup environment, modul klien HTTP Sectors (retry & rate limit handler), layer caching lokal (`snapshot_cache`), dan unit test konektivitas.
