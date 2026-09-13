@@ -30,6 +30,8 @@ market-intelligence/
 │   ├── onboarding.md               # Orientasi cepat developer
 │   ├── project.md                  # PRD & landasan matematis
 │   ├── timeline.md                 # Jadwal sprint 7 hari
+│   ├── walkthrough.md              # Rekam jejak progres proyek & checkpoint
+│   ├── engine_mathematics_and_logic.md # Dokumentasi lengkap sistem, logika & matematika
 │   └── docs_sectors_api/           # Katalog 70 endpoint Sectors API v2
 ├── scripts/                        # Utility & CLI tools (smoke_test.py, scan runner)
 ├── tests/                          # Automated Pytest suite with RESpx offline mocks
@@ -46,6 +48,8 @@ market-intelligence/
 | `make install` | Install semua dependensi via `uv` |
 | `make test` | Jalankan seluruh unit test suite (`pytest`) |
 | `make smoke-test` | Jalankan smoke test live konektivitas Sectors API |
+| `make smoke-test-llm` | Jalankan live smoke test Gemini LLM |
+| `make smoke-test-engine` | Jalankan cross-check live/cache Market State Engine pada ASII |
 | `make dev-api` | Jalankan server backend FastAPI (`http://localhost:8000`) |
 | `make lint` | Validasi kode dengan `ruff` dan `pyright` |
 | `make format` | Otomatis rapikan format kode |

@@ -211,6 +211,9 @@ make format
   * PE TTM: `6.67x` (Cocok)
   * All Peer Z-scores: `0.0000` (Kompak sesuai teori n=1)
 
+> [!NOTE]
+> Dokumentasi lengkap arsitektur sistem, rasionalitas bisnis/finansial, penurunan rumus matematika konsistensi MAD ($k=1.4826$), dan pembuktian formal invarian telah didokumentasikan di [`docs/engine_mathematics_and_logic.md`](file:///Users/rio/Documents/RIO/Pemrograman/my_product/market-intelligence/docs/engine_mathematics_and_logic.md).
+
 ---
 
 ## 7. Rencana Kerja Selanjutnya: HARI 3
