@@ -24,7 +24,8 @@ Edge-case guards:
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+import math
+from datetime import date
 from typing import Any
 
 from src.engine.models import MetricSet
@@ -42,14 +43,32 @@ or near-zero revenue/earnings producing misleading growth rates."""
 MIN_QUARTERS_TTM = 4
 """Minimum quarters needed for TTM (Trailing Twelve Months) calculation."""
 
-MIN_QUARTERS_YOY = 5
-"""Minimum quarters needed for YoY comparison (latest + 4 prior quarters
-to find same-quarter in previous year)."""
-
-
 # ──────────────────────────────────────────────────────────────────────
 # Internal Helpers
 # ──────────────────────────────────────────────────────────────────────
+
+
+def _finite_number(value: object) -> float | int | None:
+    """Return a finite int/float, never coercing API values."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, int):
+        return value
+    try:
+        return value if math.isfinite(value) else None
+    except OverflowError:
+        return None
+
+
+def _parse_date(value: object) -> date | None:
+    """Parse the strict ISO reporting-date contract."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.isoformat() == value else None
 
 
 def _safe_growth(current: float | None, previous: float | None) -> float | None:
@@ -61,11 +80,17 @@ def _safe_growth(current: float | None, previous: float | None) -> float | None:
     - Either value is None
     - |previous| < MIN_DENOMINATOR (avoids noise from near-zero bases)
     """
+    current = _finite_number(current)
+    previous = _finite_number(previous)
     if current is None or previous is None:
         return None
     if abs(previous) < MIN_DENOMINATOR:
         return None
-    return (current - previous) / abs(previous)
+    try:
+        result = (current - previous) / abs(previous)
+    except OverflowError:
+        return None
+    return result if math.isfinite(result) else None
 
 
 def _safe_divide(numerator: float | None, denominator: float | None) -> float | None:
@@ -75,20 +100,24 @@ def _safe_divide(numerator: float | None, denominator: float | None) -> float | 
     - Either value is None
     - Denominator is zero or negative (for equity-based ratios)
     """
+    numerator = _finite_number(numerator)
+    denominator = _finite_number(denominator)
     if numerator is None or denominator is None:
         return None
     if denominator <= 0:
         return None
-    return numerator / denominator
+    try:
+        result = numerator / denominator
+    except OverflowError:
+        return None
+    return result if math.isfinite(result) else None
 
 
 def _find_yoy_quarter(
     quarterly: list[dict[str, Any]],
     latest_date: str,
 ) -> dict[str, Any] | None:
-    """Find the same quarter from the previous year for YoY comparison.
-
-    Matches on month (allows ±15 day tolerance for different reporting dates).
+    """Find the exact same reporting month from the previous year.
 
     Args:
         quarterly: List of quarterly dicts, each with "date" field (YYYY-MM-DD).
@@ -97,27 +126,19 @@ def _find_yoy_quarter(
     Returns:
         The matching quarter dict, or None if not found.
     """
-    try:
-        latest_dt = datetime.strptime(latest_date, "%Y-%m-%d")
-    except (ValueError, TypeError):
+    latest_dt = _parse_date(latest_date)
+    if latest_dt is None:
         return None
 
     target_month = latest_dt.month
     target_year = latest_dt.year - 1
 
     for q in quarterly:
-        q_date_str = q.get("date")
-        if not q_date_str:
-            continue
-        try:
-            q_dt = datetime.strptime(q_date_str, "%Y-%m-%d")
-        except (ValueError, TypeError):
+        q_dt = _parse_date(q.get("date"))
+        if q_dt is None:
             continue
 
         if q_dt.year == target_year and q_dt.month == target_month:
-            return q
-        # Tolerance: ±1 month for fiscal year differences
-        if q_dt.year == target_year and abs(q_dt.month - target_month) <= 1:
             return q
 
     return None
@@ -128,11 +149,52 @@ def _compute_margin(operating_pnl: float | None, revenue: float | None) -> float
 
     Returns None if revenue is None, zero, or negative.
     """
+    operating_pnl = _finite_number(operating_pnl)
+    revenue = _finite_number(revenue)
     if operating_pnl is None or revenue is None:
         return None
     if revenue <= 0:
         return None
-    return operating_pnl / revenue
+    try:
+        result = operating_pnl / revenue
+    except OverflowError:
+        return None
+    return result if math.isfinite(result) else None
+
+
+def _validated_quarters(quarterly: list[dict[str, Any]]) -> list[tuple[date, dict[str, Any]]]:
+    """Accept unique ISO-dated quarterly observations, newest first."""
+    validated: list[tuple[date, dict[str, Any]]] = []
+    seen_dates: set[date] = set()
+    for quarter in quarterly:
+        if not isinstance(quarter, dict):
+            return []
+        report_date = _parse_date(quarter.get("date"))
+        if report_date is None or report_date in seen_dates:
+            return []
+        validated.append((report_date, quarter))
+        seen_dates.add(report_date)
+    return sorted(validated, key=lambda item: item[0], reverse=True)
+
+
+def _validated_daily(daily: list[dict[str, Any]]) -> list[tuple[date, dict[str, Any]]]:
+    """Accept unique ISO-dated daily observations, oldest first."""
+    validated: list[tuple[date, dict[str, Any]]] = []
+    seen_dates: set[date] = set()
+    for observation in daily:
+        if not isinstance(observation, dict):
+            return []
+        observation_date = _parse_date(observation.get("date"))
+        if observation_date is None or observation_date in seen_dates:
+            return []
+        validated.append((observation_date, observation))
+        seen_dates.add(observation_date)
+    return sorted(validated, key=lambda item: item[0])
+
+
+def _are_adjacent_quarters(newer: date, older: date) -> bool:
+    """Whether two reporting dates are one calendar quarter apart."""
+    return (newer.year * 12 + newer.month) - (older.year * 12 + older.month) == 3
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -148,17 +210,17 @@ def calculate_metrics(
     """Compute raw financial metrics from Sectors API data.
 
     Args:
-        quarterly: Quarterly financial data, sorted newest-first.
+        quarterly: Quarterly financial data with unique ISO dates.
                    Each dict has: date, revenue, earnings, operating_pnl,
                    total_equity, etc.
-        daily: Daily transaction data, sorted by date ascending.
+        daily: Daily transaction data with unique ISO dates.
                Each dict has: date, close, market_cap.
         market_cap: Latest market cap. If None, extracted from daily data.
 
     Returns:
         Tuple of:
         - MetricSet with computed raw metrics
-        - growth_method: "YoY" or "QoQ"
+        - growth_method: "YoY", "QoQ", or "N/A"
         - growth_period: e.g., "Q2 2026 vs Q2 2025 (YoY)"
         - price_period: e.g., "2026-08-11 to 2026-09-09"
     """
@@ -167,88 +229,72 @@ def calculate_metrics(
     growth_period: str | None = None
     price_period: str | None = None
 
-    # ── Growth Metrics (Revenue, Earnings, Margin) ──────────────
+    validated = _validated_quarters(quarterly)
+    validated_daily = _validated_daily(daily)
+    latest = validated[0][1] if validated else None
+    latest_date = validated[0][0] if validated else None
 
-    if len(quarterly) >= 2:
-        q_latest = quarterly[0]
-        latest_date = q_latest.get("date", "")
+    latest_market_cap = _finite_number(market_cap)
+    if latest_market_cap is None and validated_daily:
+        latest_market_cap = _finite_number(validated_daily[-1][1].get("market_cap"))
 
-        # Try YoY first (requires ≥ 5 quarters to find same quarter prior year)
-        q_comp = None
-        if len(quarterly) >= MIN_QUARTERS_YOY:
-            q_comp = _find_yoy_quarter(quarterly, latest_date)
+    # These latest-period ratios do not require comparison or TTM history.
+    if latest is not None:
+        metrics.operating_margin = _compute_margin(
+            latest.get("operating_pnl"), latest.get("revenue")
+        )
+        latest_equity = _finite_number(latest.get("total_equity"))
+        if latest_market_cap is not None and latest_market_cap >= 0:
+            metrics.pb = _safe_divide(latest_market_cap, latest_equity)
+    else:
+        latest_equity = None
 
+    # ── Growth Metrics (YoY first, then only adjacent QoQ) ──────
+    if latest is not None and latest_date is not None and len(validated) >= 2:
+        q_comp = _find_yoy_quarter([q for _, q in validated], latest.get("date", ""))
         if q_comp is not None:
             growth_method = "YoY"
-            comp_date = q_comp.get("date", "?")
-            growth_period = f"{latest_date} vs {comp_date} (YoY)"
-        else:
-            # Fallback to QoQ
-            q_comp = quarterly[1]
+        elif _are_adjacent_quarters(latest_date, validated[1][0]):
+            q_comp = validated[1][1]
             growth_method = "QoQ"
-            comp_date = q_comp.get("date", "?")
-            growth_period = f"{latest_date} vs {comp_date} (QoQ)"
 
-        # Revenue growth
-        metrics.revenue_growth = _safe_growth(
-            q_latest.get("revenue"),
-            q_comp.get("revenue"),
-        )
-
-        # Earnings growth
-        metrics.earnings_growth = _safe_growth(
-            q_latest.get("earnings"),
-            q_comp.get("earnings"),
-        )
-
-        # Operating margin (latest quarter)
-        metrics.operating_margin = _compute_margin(
-            q_latest.get("operating_pnl"),
-            q_latest.get("revenue"),
-        )
-
-        # Margin change (latest vs comparison quarter)
-        margin_latest = metrics.operating_margin
-        margin_comp = _compute_margin(
-            q_comp.get("operating_pnl"),
-            q_comp.get("revenue"),
-        )
-
-        if margin_latest is not None and margin_comp is not None:
-            metrics.margin_change = margin_latest - margin_comp
+        if q_comp is not None:
+            comp_date = q_comp["date"]
+            growth_period = f"{latest['date']} vs {comp_date} ({growth_method})"
+            metrics.revenue_growth = _safe_growth(latest.get("revenue"), q_comp.get("revenue"))
+            metrics.earnings_growth = _safe_growth(latest.get("earnings"), q_comp.get("earnings"))
+            margin_comp = _compute_margin(q_comp.get("operating_pnl"), q_comp.get("revenue"))
+            if metrics.operating_margin is not None and margin_comp is not None:
+                change = metrics.operating_margin - margin_comp
+                metrics.margin_change = change if math.isfinite(change) else None
 
     # ── TTM Metrics (ROE, PE) ───────────────────────────────────
-
-    if len(quarterly) >= MIN_QUARTERS_TTM:
-        ttm_earnings = sum(q.get("earnings", 0) or 0 for q in quarterly[:MIN_QUARTERS_TTM])
-        latest_equity = quarterly[0].get("total_equity")
-
-        # ROE TTM
-        if latest_equity is not None and latest_equity > 0 and ttm_earnings != 0:
-            metrics.roe_ttm = ttm_earnings / latest_equity
-
-        # PE TTM (informational)
-        if market_cap is None and daily:
-            market_cap = daily[-1].get("market_cap")
-
-        if market_cap is not None and ttm_earnings > 0:
-            metrics.pe_ttm = market_cap / ttm_earnings
-
-        # PB (informational)
-        if market_cap is not None and latest_equity is not None and latest_equity > 0:
-            metrics.pb = market_cap / latest_equity
+    ttm_quarters = validated[:MIN_QUARTERS_TTM]
+    if len(ttm_quarters) == MIN_QUARTERS_TTM and all(
+        _are_adjacent_quarters(ttm_quarters[i][0], ttm_quarters[i + 1][0])
+        for i in range(MIN_QUARTERS_TTM - 1)
+    ):
+        earnings = [_finite_number(q.get("earnings")) for _, q in ttm_quarters]
+        if all(value is not None for value in earnings):
+            ttm_earnings = sum(earnings)
+            metrics.roe_ttm = _safe_divide(ttm_earnings, latest_equity)
+            if latest_market_cap is not None and latest_market_cap >= 0 and ttm_earnings > 0:
+                metrics.pe_ttm = _safe_divide(latest_market_cap, ttm_earnings)
 
     # ── Price Return ────────────────────────────────────────────
 
-    if len(daily) >= 2:
-        close_first = daily[0].get("close")
-        close_last = daily[-1].get("close")
-
-        if close_first is not None and close_last is not None and close_first > 0:
-            metrics.price_return = (close_last - close_first) / close_first
-
-        date_first = daily[0].get("date", "?")
-        date_last = daily[-1].get("date", "?")
-        price_period = f"{date_first} to {date_last}"
+    if len(validated_daily) >= 2:
+        first_date, first = validated_daily[0]
+        last_date, last = validated_daily[-1]
+        if first_date < last_date:
+            price_period = f"{first['date']} to {last['date']}"
+            close_first = _finite_number(first.get("close"))
+            close_last = _finite_number(last.get("close"))
+            if close_first is not None and close_last is not None and close_first > 0 and close_last >= 0:
+                try:
+                    result = (close_last - close_first) / close_first
+                except OverflowError:
+                    result = None
+                metrics.price_return = result if result is not None and math.isfinite(result) else None
 
     return metrics, growth_method, growth_period, price_period

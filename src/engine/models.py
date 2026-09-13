@@ -67,8 +67,8 @@ class PeerZScores:
     Formula (Iglewicz & Hoaglin, 1993):
         z = (x − median) / (1.4826 × MAD)
 
-    The consistency factor k=1.4826 makes z ≈ standard z-score under normality,
-    so thresholds 1.0/1.5 are interpretable as σ-units.
+    The factor k=1.4826 gives asymptotic normal scale consistency. It does not
+    calibrate tail probabilities or a composite discrepancy threshold.
 
     None means the raw metric was None or sample too small for normalization.
     """
@@ -104,6 +104,7 @@ class CompanyState:
     growth_method: str | None = None  # "YoY" or "QoQ"
     price_period: str | None = None  # e.g., "2026-08-11 to 2026-09-09"
     data_timestamp: str | None = None
+    normalization_exclusions: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -120,6 +121,7 @@ class MetricDistribution:
     p99: float  # 99th percentile bound (winsorizing upper clip)
     n_valid: int  # number of companies with valid data for this metric
     was_winsorized: bool  # True if n >= 5 and winsorizing was applied
+    normalization_status: str = "ok"
 
 
 @dataclass
@@ -131,6 +133,7 @@ class SubsectorProfile:
     n_companies: int  # total companies in subsector
     n_with_metrics: int  # companies with at least one valid metric
     distributions: dict[str, MetricDistribution] = field(default_factory=dict)
+    normalization_periods: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass

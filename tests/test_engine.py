@@ -2,7 +2,7 @@
 
 Tests cover:
 - Full pipeline with synthetic data (3 subsectors × 5 companies)
-- Single company subsector (all peer_z = 0.0)
+- Single company subsector (all peer_z unavailable)
 - All-None metrics (graceful degradation)
 - ASII cross-check (metrics match pre-computed values from live cache)
 """
@@ -141,13 +141,13 @@ class TestMarketStateEngine:
         for subsector, profile in result.subsector_profiles.items():
             assert profile.n_companies == 5
             for metric_name, dist in profile.distributions.items():
-                if dist.n_valid >= 3:
+                if dist.normalization_status in ("ok", "low_sample"):
                     assert dist.scaled_mad > 0, (
                         f"{subsector}.{metric_name}: scaled_mad should be > 0"
                     )
 
     def test_single_company_subsector(self):
-        """Subsector with 1 company → all peer_z = 0.0."""
+        """Subsector with 1 company → all peer_z unavailable."""
         universe = {
             "solo-sector": [
                 CompanyInfo(
@@ -171,12 +171,12 @@ class TestMarketStateEngine:
         assert len(result.companies) == 1
         cs = result.companies[0]
 
-        # With only 1 company, all z-scores should be 0.0
-        assert cs.peer_z.z_revenue_growth == 0.0
-        assert cs.peer_z.z_earnings_growth == 0.0
-        assert cs.peer_z.z_margin_change == 0.0
-        assert cs.peer_z.z_roe == 0.0
-        assert cs.peer_z.z_price_return == 0.0
+        # No evidence about relative standing with just one company.
+        assert cs.peer_z.z_revenue_growth is None
+        assert cs.peer_z.z_earnings_growth is None
+        assert cs.peer_z.z_margin_change is None
+        assert cs.peer_z.z_roe is None
+        assert cs.peer_z.z_price_return is None
 
         # But raw metrics should be populated
         assert cs.raw_metrics.revenue_growth is not None
@@ -256,3 +256,44 @@ class TestMarketStateEngine:
 
         symbols = [c.symbol for c in result.companies]
         assert symbols == ["AAA", "BBB", "ZZZ"]
+
+
+def test_normalization_excludes_incomparable_periods_without_losing_raw_data():
+    symbols = ["A", "B", "C", "QOQ", "OLD", "SHORT"]
+    universe = {"test": [CompanyInfo(s, s, "sector", "test") for s in symbols]}
+    data = {}
+    for i, symbol in enumerate(symbols):
+        quarters = _make_quarterly((100 + i * 10) * 1e9, (10 + i) * 1e9, 20e9, 200e9)
+        if symbol != "QOQ":
+            quarters.append(
+                {
+                    "date": "2025-06-30",
+                    "revenue": 90e9,
+                    "earnings": 8e9,
+                    "operating_pnl": 10e9,
+                    "total_equity": 200e9,
+                }
+            )
+        if symbol == "OLD":
+            for row in quarters:
+                row["date"] = str(int(row["date"][:4]) - 1) + row["date"][4:]
+        daily = _make_daily(1000 + i * 100)
+        daily[-1]["close"] *= 1 + i * 0.03
+        if symbol == "SHORT":
+            daily[0]["date"] = "2026-09-01"
+        data[symbol] = {"quarterly": quarters, "daily": daily}
+    result = _make_mock_engine(universe, data).compute_market_state(universe)
+    companies = {c.symbol: c for c in result.companies}
+    assert companies["QOQ"].growth_method == "QoQ"
+    assert companies["QOQ"].raw_metrics.revenue_growth is not None
+    assert companies["QOQ"].peer_z.z_revenue_growth is None
+    assert companies["QOQ"].normalization_exclusions["revenue_growth"] == "yoy_required"
+    assert companies["OLD"].peer_z.z_revenue_growth is None
+    assert companies["OLD"].peer_z.z_roe is None
+    assert companies["SHORT"].raw_metrics.price_return is not None
+    assert companies["SHORT"].peer_z.z_price_return is None
+    assert companies["A"].peer_z.z_revenue_growth is not None
+    profile = result.subsector_profiles["test"]
+    assert profile.distributions["revenue_growth"].n_valid == 4
+    assert profile.distributions["price_return"].n_valid == 5
+    assert profile.normalization_periods["price_return"] == "2026-08-11 to 2026-09-09"

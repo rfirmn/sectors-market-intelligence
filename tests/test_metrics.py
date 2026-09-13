@@ -14,6 +14,8 @@ Tests cover:
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from src.engine.metrics import (
@@ -46,6 +48,12 @@ class TestSafeGrowth:
         """None values → None."""
         assert _safe_growth(None, 100e9) is None
         assert _safe_growth(100e9, None) is None
+
+    def test_rejects_non_finite_and_non_numeric_inputs(self):
+        """Raw API values must not coerce strings/bools or leak NaN/Infinity."""
+        for invalid in ("100", True, math.nan, math.inf, -math.inf):
+            assert _safe_growth(invalid, 100e9) is None
+            assert _safe_growth(100e9, invalid) is None
 
     def test_loss_to_profit(self):
         """Transition from loss to profit: -10B → +5B = +150%."""
@@ -116,6 +124,15 @@ class TestFindYoyQuarter:
     def test_invalid_date(self):
         """Invalid date string → None."""
         assert _find_yoy_quarter([{"date": "bad"}], "bad") is None
+
+    def test_basic_iso_date_is_not_accepted(self):
+        """Date keys must be canonical YYYY-MM-DD, never compact YYYYMMDD."""
+        assert _find_yoy_quarter([{"date": "20250630"}], "20260630") is None
+
+    def test_adjacent_month_is_not_yoy(self):
+        """May is not a substitute for the June reporting month."""
+        result = _find_yoy_quarter([{"date": "2025-05-31"}], "2026-06-30")
+        assert result is None
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -210,6 +227,37 @@ class TestCalculateMetrics:
         assert metrics.revenue_growth == pytest.approx(0.0566, abs=0.001)
         assert "YoY" in (period or "")
 
+    def test_sparse_exact_yoy_does_not_require_five_observations(self):
+        """A sparse but exact Q2-to-Q2 comparison is still YoY."""
+        quarterly = [
+            {"date": "2026-06-30", "revenue": 125e9, "earnings": 25e9},
+            {"date": "2025-06-30", "revenue": 100e9, "earnings": 20e9},
+        ]
+        metrics, method, period, _ = calculate_metrics(quarterly, [])
+        assert method == "YoY"
+        assert "2025-06-30" in (period or "")
+        assert metrics.revenue_growth == pytest.approx(0.25)
+
+    def test_non_adjacent_history_is_not_labeled_qoq(self):
+        """A six-month gap must not enter a QoQ growth distribution."""
+        quarterly = [
+            {
+                "date": "2026-06-30",
+                "revenue": 120e9,
+                "earnings": 12e9,
+                "operating_pnl": 18e9,
+                "total_equity": 100e9,
+            },
+            {"date": "2025-12-31", "revenue": 100e9, "earnings": 10e9, "operating_pnl": 10e9},
+        ]
+        metrics, method, period, _ = calculate_metrics(quarterly, [], market_cap=200e9)
+        assert method == "N/A"
+        assert period is None
+        assert metrics.revenue_growth is None
+        assert metrics.margin_change is None
+        assert metrics.operating_margin == pytest.approx(0.15)
+        assert metrics.pb == pytest.approx(2.0)
+
     def test_earnings_growth_qoq(self):
         """Earnings growth QoQ: (6.683T - 5.850T) / 5.850T ≈ 14.24%."""
         metrics, _, _, _ = calculate_metrics(ASII_QUARTERLY, ASII_DAILY)
@@ -229,6 +277,53 @@ class TestCalculateMetrics:
         """ROE TTM: (6.683+5.850+8.296+8.958)T / 289.844T ≈ 10.28%."""
         metrics, _, _, _ = calculate_metrics(ASII_QUARTERLY, ASII_DAILY)
         assert metrics.roe_ttm == pytest.approx(0.1028, abs=0.001)
+
+    def test_zero_ttm_earnings_is_valid_zero_roe(self):
+        """A complete zero-sum TTM is zero ROE, not missing data."""
+        quarterly = [
+            {"date": "2026-06-30", "earnings": 1e9, "total_equity": 100e9},
+            {"date": "2026-03-31", "earnings": -1e9},
+            {"date": "2025-12-31", "earnings": 1e9},
+            {"date": "2025-09-30", "earnings": -1e9},
+        ]
+        metrics, _, _, _ = calculate_metrics(quarterly, [], market_cap=100e9)
+        assert metrics.roe_ttm == 0.0
+        assert metrics.pe_ttm is None
+
+    def test_ttm_requires_four_consecutive_finite_earnings(self):
+        """A missing quarter or NaN must not be silently treated as zero earnings."""
+        gapped = [
+            {"date": "2026-06-30", "earnings": 1e9, "total_equity": 100e9},
+            {"date": "2026-03-31", "earnings": 1e9},
+            {"date": "2025-09-30", "earnings": 1e9},
+            {"date": "2025-06-30", "earnings": 1e9},
+        ]
+        non_finite = [
+            {"date": "2026-06-30", "earnings": 1e9, "total_equity": 100e9},
+            {"date": "2026-03-31", "earnings": math.nan},
+            {"date": "2025-12-31", "earnings": 1e9},
+            {"date": "2025-09-30", "earnings": 1e9},
+        ]
+        for quarterly in (gapped, non_finite):
+            metrics, _, _, _ = calculate_metrics(quarterly, [], market_cap=100e9)
+            assert metrics.roe_ttm is None
+            assert metrics.pe_ttm is None
+
+    def test_latest_period_metrics_do_not_need_ttm_history(self):
+        """Margin and PB remain available with one valid latest report."""
+        quarterly = [
+            {
+                "date": "2026-06-30",
+                "revenue": 100e9,
+                "operating_pnl": 10e9,
+                "total_equity": 50e9,
+            }
+        ]
+        metrics, method, _, _ = calculate_metrics(quarterly, [], market_cap=75e9)
+        assert method == "N/A"
+        assert metrics.operating_margin == pytest.approx(0.10)
+        assert metrics.pb == pytest.approx(1.5)
+        assert metrics.roe_ttm is None
 
     def test_pe_ttm(self):
         """PE TTM: 196.345T / 29.787T ≈ 6.59x."""
@@ -327,6 +422,54 @@ class TestCalculateMetrics:
         assert price_period is not None
         assert "2026-08-11" in price_period
         assert "2026-09-09" in price_period
+
+    def test_invalid_price_endpoint_returns_none(self):
+        """Non-finite, boolean, or negative close endpoints are invalid."""
+        for first, last in ((math.nan, 100), (True, 100), (100, math.inf), (100, -1)):
+            daily = [
+                {"date": "2026-08-11", "close": first},
+                {"date": "2026-09-09", "close": last},
+            ]
+            metrics, _, _, price_period = calculate_metrics([], daily)
+            assert metrics.price_return is None
+            assert price_period == "2026-08-11 to 2026-09-09"
+
+    def test_unsorted_quarters_and_daily_are_sorted(self):
+        """Calculator retains prior orchestration support for unordered API rows."""
+        metrics, method, _, price_period = calculate_metrics(
+            list(reversed(ASII_QUARTERLY)), list(reversed(ASII_DAILY))
+        )
+        assert method == "QoQ"
+        assert metrics.roe_ttm == pytest.approx(0.1028, abs=0.001)
+        assert metrics.price_return == pytest.approx(-0.0041, abs=0.001)
+        assert price_period == "2026-08-11 to 2026-09-09"
+
+    def test_duplicate_quarters_are_rejected(self):
+        """Ambiguous quarterly histories cannot supply growth or TTM values."""
+        duplicate = [
+            {"date": "2026-06-30", "earnings": 1e9, "total_equity": 100e9},
+            {"date": "2026-03-31", "earnings": 1e9},
+            {"date": "2026-03-31", "earnings": 1e9},
+            {"date": "2025-09-30", "earnings": 1e9},
+        ]
+        metrics, method, period, _ = calculate_metrics(duplicate, [], market_cap=100e9)
+        assert method == "N/A"
+        assert period is None
+        assert metrics.roe_ttm is None
+        assert metrics.pe_ttm is None
+
+    def test_duplicate_daily_dates_are_rejected(self):
+        """Ambiguous close endpoints cannot produce a return or market-cap PB."""
+        daily = [
+            {"date": "2026-09-09", "close": 100, "market_cap": 100e9},
+            {"date": "2026-09-09", "close": 110, "market_cap": 110e9},
+        ]
+        metrics, _, _, price_period = calculate_metrics(
+            [{"date": "2026-06-30", "total_equity": 50e9}], daily
+        )
+        assert metrics.price_return is None
+        assert metrics.pb is None
+        assert price_period is None
 
     def test_zero_revenue_growth(self):
         """Previous revenue below MIN_DENOMINATOR → growth = None."""

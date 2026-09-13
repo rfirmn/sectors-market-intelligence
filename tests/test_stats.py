@@ -13,7 +13,6 @@ import pytest
 from src.engine.models import MetricSet
 from src.engine.stats import (
     MAD_CONSISTENCY_FACTOR,
-    MAD_ZERO_FALLBACK_FRACTION,
     MIN_SAMPLE_NORMALIZE,
     compute_subsector_zscores,
     peer_z,
@@ -113,12 +112,11 @@ class TestRobustScale:
         assert scaled == pytest.approx(MAD_CONSISTENCY_FACTOR * 1.0)
 
     def test_all_identical(self):
-        """All values identical → MAD=0, scaled uses fallback."""
+        """All values identical → MAD=0, no invented dispersion."""
         med, mad, scaled = robust_scale([5.0, 5.0, 5.0])
         assert med == 5.0
         assert mad == 0.0
-        # Fallback: |5.0| × 0.01 = 0.05
-        assert scaled == pytest.approx(5.0 * MAD_ZERO_FALLBACK_FRACTION)
+        assert scaled == 0.0
 
     def test_all_zero(self):
         """All zeros → median=0, MAD=0, scaled=0."""
@@ -128,11 +126,11 @@ class TestRobustScale:
         assert scaled == 0.0
 
     def test_single_value(self):
-        """Single value → MAD=0, fallback applied."""
+        """Single value → MAD=0."""
         med, mad, scaled = robust_scale([42.0])
         assert med == 42.0
         assert mad == 0.0
-        assert scaled == pytest.approx(42.0 * MAD_ZERO_FALLBACK_FRACTION)
+        assert scaled == 0.0
 
     def test_empty_raises(self):
         """Empty list → ValueError."""
@@ -168,14 +166,14 @@ class TestPeerZ:
         assert z == pytest.approx(-1.0)
 
     def test_small_sample(self):
-        """n < MIN_SAMPLE_NORMALIZE → returns 0.0."""
+        """Insufficient data is unknown, not average."""
         z = peer_z(100.0, 8.0, 2.0, MIN_SAMPLE_NORMALIZE - 1)
-        assert z == 0.0
+        assert z is None
 
     def test_scaled_mad_zero(self):
-        """scaled_mad = 0 → returns 0.0 (no information)."""
+        """Zero scale is unknown even if some observations differ."""
         z = peer_z(100.0, 8.0, 0.0, 20)
-        assert z == 0.0
+        assert z is None
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -220,7 +218,7 @@ class TestSubsectorZScores:
                     assert abs(val) < 10.0, f"{sym}.{field_name} = {val} is too extreme"
 
     def test_single_company(self):
-        """Subsector with 1 company → all z = 0.0 (n < MIN_SAMPLE)."""
+        """Subsector with 1 company → scores unavailable."""
         companies = {
             "SOLO": MetricSet(
                 revenue_growth=0.15,
@@ -230,9 +228,10 @@ class TestSubsectorZScores:
         }
         z_scores, profile = compute_subsector_zscores(companies)
 
-        assert z_scores["SOLO"].z_revenue_growth == 0.0
-        assert z_scores["SOLO"].z_earnings_growth == 0.0
-        assert z_scores["SOLO"].z_margin_change == 0.0
+        assert z_scores["SOLO"].z_revenue_growth is None
+        assert z_scores["SOLO"].z_earnings_growth is None
+        assert z_scores["SOLO"].z_margin_change is None
+        assert profile.distributions["revenue_growth"].normalization_status == "insufficient_sample"
 
     def test_all_none_metrics(self):
         """Company with all None metrics → all z remain None."""
@@ -264,3 +263,38 @@ class TestSubsectorZScores:
         assert profile.distributions["revenue_growth"].n_valid == 8
         assert profile.distributions["revenue_growth"].was_winsorized is True
         assert profile.distributions["revenue_growth"].scaled_mad > 0
+
+
+def test_degenerate_scale_is_translation_invariant():
+    """A majority of ties is not an all-identical sample; never invent scale."""
+    for values in ([1, 1, 1, 2, 3], [0, 0, 0, 1, 2]):
+        companies = {str(i): MetricSet(revenue_growth=x) for i, x in enumerate(values)}
+        scores, profile = compute_subsector_zscores(companies)
+        assert all(s.z_revenue_growth is None for s in scores.values())
+        assert profile.distributions["revenue_growth"].normalization_status == "degenerate_scale"
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), -float("inf"), True, "1"])
+def test_invalid_value_cannot_poison_other_peers(bad):
+    companies = {str(i): MetricSet(revenue_growth=x) for i, x in enumerate([1, 2, 3])}
+    expected, _ = compute_subsector_zscores(companies)
+    companies["BAD"] = MetricSet(revenue_growth=bad)
+    actual, profile = compute_subsector_zscores(companies)
+    assert actual["BAD"].z_revenue_growth is None
+    assert actual["0"] == expected["0"]
+    assert profile.distributions["revenue_growth"].n_valid == 3
+    assert profile.n_with_metrics == 3
+    assert peer_z(bad, 0, 1, 5) is None
+
+
+def test_finite_inputs_that_overflow_scale_remain_json_serializable():
+    import json
+    from dataclasses import asdict
+
+    companies = {
+        str(i): MetricSet(revenue_growth=v) for i, v in enumerate([-1e308, -1e308, 1e308, 1e308])
+    }
+    scores, profile = compute_subsector_zscores(companies)
+    assert all(s.z_revenue_growth is None for s in scores.values())
+    assert profile.distributions["revenue_growth"].normalization_status == "invalid_numeric_range"
+    json.dumps(asdict(profile), allow_nan=False)

@@ -131,7 +131,7 @@ def run_smoke_test():
     if m.pe_ttm is not None:
         all_ok &= _check_metric("pe_ttm", m.pe_ttm, ASII_EXPECTED["pe_ttm"], tol=0.1)
 
-    logger.info("\n--- Peer Z-Scores (single company → all should be 0.0) ---")
+    logger.info("\n--- Peer Z-Scores (single company → unavailable) ---")
     z = asii.peer_z
     for field in (
         "z_revenue_growth",
@@ -142,9 +142,8 @@ def run_smoke_test():
     ):
         val = getattr(z, field)
         if val is not None:
-            logger.info("  %s = %.4f (expected 0.0)", field, val)
-            if abs(val) > 0.01:
-                logger.warning("  ⚠ Z-score should be 0.0 for single-company subsector")
+            logger.error("  %s = %.4f (expected None)", field, val)
+            all_ok = False
         else:
             logger.info("  %s = None", field)
 

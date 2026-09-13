@@ -141,13 +141,22 @@ Delapan blok ini adalah keseluruhan sistem. Tidak ada multi-agent swarm, tidak a
 
 ```
 peer_z(metric) = (company_metric − median(peer_group_metric))
-                 / MAD(peer_group_metric)
+                 / (1.4826 × MAD(peer_group_metric))
 
-peer_group = perusahaan lain di subsektor yang sama (taxonomy Sectors)
+peer_group = cohort subsektor dan periode yang sama (termasuk perusahaan yang dinilai)
 nilai ekstrem di-winsorize pada persentil 1% / 99% sebelum median & MAD dihitung
 ```
 
-Semua metrik yang dipakai untuk discovery dan ranking harus melalui `peer_z`, bukan angka mentah. Ini membuat growth (%), margin (pp), dan valuasi (x) bisa dibandingkan di skala yang sama secara matematis benar.
+**Revisi validitas 2026-09-13:** numerator tetap mentah; winsorizing tidak membatasi
+skor individual. Growth peer_z hanya memakai YoY. Per keluarga metrik dipilih cohort
+periode persis yang paling banyak tersedia, periode terbaru jika jumlah seri.
+`n<3`, MAD nol, atau angka tidak valid menghasilkan `None`, bukan nol.
+`n=3..7` ditandai `low_sample`. Faktor 1.4826 memberi normal consistency
+asimptotik; ia tidak mengalibrasi probabilitas threshold komposit.
+Lihat [audit dan simulasi](engine_design_review_and_simulation.md).
+
+Semua metrik dalam discovery dinormalisasi ke skala relatif terhadap peer.
+Kesamaan unit skor tidak menjamin kesetaraan informasi atau risiko setiap metrik.
 
 **Pengecualian sektor keuangan (keputusan scope, bukan bug):** perusahaan di sektor perbankan/asuransi/multifinance memakai struktur laporan keuangan berbeda (net interest income, gross loan, total deposit, bukan revenue/margin konvensional). MVP **mengecualikan sektor keuangan dari universe discovery** — bukan memaksakan rule yang sama untuknya. Ini konsisten dengan preseden Altman Z-Score yang memakai formula berbeda per tipe perusahaan.
 
@@ -181,9 +190,19 @@ THRESHOLD (fixed, ditulis di README sebelum development jalan):
   discrepancy > 1.5  → HIGH priority
 ```
 
+**Kontrak untuk implementasi discovery berikutnya:** hitung discrepancy hanya jika
+ketiga growth z dan price z tersedia. Jangan mengisi missing dengan nol atau
+merata-ratakan hanya komponen yang ada. Tampilkan fundamental_z dan price_z
+terpisah; discrepancy positif tidak membuktikan valuasi murah. Gate tambahan
+fundamental_z > 0 adalah hipotesis pengembangan yang belum diaktifkan/dibacktest.
+
 **Catatan kejujuran teknis (tidak berubah dari draf sebelumnya, tetap berlaku):** ini secara implementasi adalah compound relational filter, hanya sekarang dengan basis statistik yang jelas (z-score, bukan threshold tebakan). Klaim yang aman untuk video/README: *"a relational, peer-normalized screener grounded in cross-sectional z-scoring — not a single-metric threshold filter."*
 
-**Disiplin anti-overfitting:** threshold `1.0` dan `1.5` di atas ditentukan sebagai bilangan bulat sederhana sebelum kandidat demo dipilih. Kalau saat development ternyata tidak ada kandidat menarik yang lolos, threshold boleh disesuaikan — tapi harus dicatat di README bahwa itu penyesuaian metodologis (misal: dari 1.0 ke 0.8 karena distribusi discrepancy di universe IDX lebih sempit), bukan disembunyikan seolah angka itu final sejak awal.
+**Disiplin anti-overfitting:** threshold `1.0` dan `1.5` adalah aturan triase tetap,
+bukan batas signifikansi. Jangan menyesuaikannya untuk menghasilkan kandidat demo.
+Perubahan metodologi memerlukan versi baru, alasan tertulis, dan evaluasi pada
+periode yang belum digunakan memilih perubahan; mencatat perubahan saja tidak
+menghapus selection bias.
 
 ---
 

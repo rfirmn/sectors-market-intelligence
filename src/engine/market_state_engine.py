@@ -13,7 +13,9 @@ This is the main entry point for the quantitative engine.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from collections import Counter
+from dataclasses import replace
+from datetime import UTC, date, datetime
 from typing import Any
 
 from src.client.sectors_client import SectorsClient
@@ -27,7 +29,7 @@ from src.engine.models import (
     SubsectorProfile,
     UniverseStats,
 )
-from src.engine.stats import compute_subsector_zscores
+from src.engine.stats import compute_subsector_zscores, is_finite_number
 from src.engine.taxonomy import build_universe
 
 logger = logging.getLogger(__name__)
@@ -39,6 +41,47 @@ logger = logging.getLogger(__name__)
 DEFAULT_N_QUARTERS = 8
 """Number of quarters to request from the API. 8 enables YoY comparison
 (latest quarter vs same quarter in prior year)."""
+
+
+def _comparable_metrics(
+    metrics_map: dict[str, MetricSet], metadata: dict[str, dict[str, Any]]
+) -> tuple[dict[str, MetricSet], dict[str, str], dict[str, dict[str, str]]]:
+    """Normalize one observed period per metric family, preserving raw values.
+
+    ponytail: largest exact-period cohort, latest on ties; add separate cohort
+    profiles if coverage warrants it. This does not establish data freshness.
+    """
+    comparable = {sym: replace(ms) for sym, ms in metrics_map.items()}
+    periods: dict[str, str] = {}
+    exclusions: dict[str, dict[str, str]] = {sym: {} for sym in metrics_map}
+    families = (
+        (("revenue_growth", "earnings_growth", "margin_change"), "growth_period"),
+        (("roe_ttm",), "financial_period"),
+        (("price_return",), "price_period"),
+    )
+    for fields, period_key in families:
+        counts: Counter[str] = Counter()
+        for sym, ms in metrics_map.items():
+            meta = metadata[sym]
+            if period_key == "growth_period" and meta["growth_method"] != "YoY":
+                continue
+            if meta[period_key] and any(is_finite_number(getattr(ms, f)) for f in fields):
+                counts[meta[period_key]] += 1
+        chosen = max(counts, key=lambda p: (counts[p], p)) if counts else None
+        for name in fields:
+            if chosen:
+                periods[name] = chosen
+            for sym in metrics_map:
+                meta = metadata[sym]
+                reason = None
+                if period_key == "growth_period" and meta["growth_method"] != "YoY":
+                    reason = "yoy_required"
+                elif chosen is None or meta[period_key] != chosen:
+                    reason = "period_mismatch_or_missing"
+                if reason:
+                    setattr(comparable[sym], name, None)
+                    exclusions[sym][name] = reason
+    return comparable, periods, exclusions
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -157,21 +200,19 @@ class MarketStateEngine:
                 quarterly = raw_data.get("quarterly", [])
                 daily = raw_data.get("daily", [])
 
-                # Ensure quarterly is sorted newest-first
-                if quarterly:
-                    quarterly = sorted(
-                        quarterly,
-                        key=lambda q: q.get("date", ""),
-                        reverse=True,
-                    )
-
-                # Ensure daily is sorted by date ascending
-                if daily:
-                    daily = sorted(daily, key=lambda d: d.get("date", ""))
-
+                # The calculator validates/sorts observations at its boundary.
                 metrics, growth_method, growth_period, price_period = calculate_metrics(
                     quarterly, daily
                 )
+
+                financial_dates = []
+                for quarter in quarterly:
+                    if not isinstance(quarter, dict):
+                        continue
+                    try:
+                        financial_dates.append(date.fromisoformat(quarter.get("date", "")))
+                    except (TypeError, ValueError):
+                        continue
 
                 subsector_metrics[subsector][ci.symbol] = metrics
                 company_metadata[ci.symbol] = {
@@ -179,6 +220,9 @@ class MarketStateEngine:
                     "growth_method": growth_method,
                     "growth_period": growth_period,
                     "price_period": price_period,
+                    "financial_period": max(financial_dates).isoformat()
+                    if financial_dates
+                    else None,
                 }
 
         # ── Step 4: Normalize per subsector ─────────────────────
@@ -196,9 +240,11 @@ class MarketStateEngine:
             first_sym = next(iter(metrics_map))
             sector = company_metadata[first_sym]["info"].sector
 
+            comparable, periods, exclusions = _comparable_metrics(metrics_map, company_metadata)
             z_scores, profile = compute_subsector_zscores(
-                metrics_map, subsector=subsector, sector=sector
+                comparable, subsector=subsector, sector=sector
             )
+            profile.normalization_periods = periods
             all_profiles[subsector] = profile
 
             # Assemble CompanyState for each company
@@ -231,6 +277,7 @@ class MarketStateEngine:
                     growth_method=meta["growth_method"],
                     price_period=meta["price_period"],
                     data_timestamp=timestamp,
+                    normalization_exclusions=exclusions[sym],
                 )
                 all_companies.append(cs)
 
@@ -244,7 +291,17 @@ class MarketStateEngine:
         )
         methodology_notes.append("Winsorizing at 1%/99% for subsectors with n ≥ 5")
         methodology_notes.append(
-            f"n_quarters={n_quarters} requested for YoY growth with QoQ fallback"
+            f"n_quarters={n_quarters}; QoQ is display-only and excluded from growth peer_z. "
+            "Each metric family uses its largest exact-period cohort (latest on ties)."
+        )
+        methodology_notes.append(
+            "methodology_version=2026-09-13-validity-v2; n<3 or MAD=0 gives None; "
+            "n=3..7 is flagged low_sample. Raw numerators remain unbounded. "
+            "Scores are descriptive, not calibrated probabilities or validated alpha."
+        )
+        methodology_notes.append(
+            "data_timestamp is computation time, not source publication/retrieval time; "
+            "equal price endpoints do not verify liquidity or corporate-action adjustment."
         )
 
         universe_stats = UniverseStats(

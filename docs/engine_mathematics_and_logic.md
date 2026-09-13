@@ -1,6 +1,32 @@
 # DOKUMENTASI SISTEM, LOGIKA & LANDASAN MATEMATIKA
 ## Market State Engine — Sectors Market Intelligence Agent (Fase Hari 2)
 
+> **Revisi 13 September 2026 — methodology `2026-09-13-validity-v2`.**
+> Ini adalah screener deskriptif, belum model prediksi return. Baca
+> [audit desain dan simulasi](engine_design_review_and_simulation.md) untuk penilaian,
+> hasil eksperimen yang dapat direproduksi, dan rekomendasi pengembangan.
+>
+> Perubahan implementasi: QoQ tersedia untuk tampilan, tetapi dikecualikan dari growth
+> peer_z. Per keluarga metrik, normalisasi memakai cohort periode persis yang paling
+> banyak tersedia (periode terbaru bila seri). Pilihan dicatat di `normalization_periods`,
+> pengecualian di `normalization_exclusions`. Ini belum memverifikasi kesegaran data.
+> TTM memerlukan empat kuartal berurutan, unik, dan laba lengkap yang finite; angka
+> hilang tidak diisi nol. `n<3` atau MAD nol menghasilkan `None`; `n=3..7` ditandai
+> `low_sample`. PB dan operating margin tidak memerlukan empat kuartan.
+>
+> **Verifikasi Empiris Diperbarui (13 September 2026):** Engine telah diuji dengan live
+> Sectors API pada **26 perusahaan di 5 subsektor** (automobiles-components, food-beverage,
+> oil-gas-coal, telecommunication, properties-real-estate) menggunakan YoY comparison
+> (n_quarters=8). Semua 5 subsektor berhasil melakukan peer normalization. Data
+> completeness 100%, metric reasonability 99.7% dari 338 checks. Period exclusion
+> bekerja: MEDC dikecualikan dari growth peer_z karena period mismatch (Q1 bukan Q2).
+> Hasil lengkap: [`live_test_20260913_121803.json`](../data/test_results/live_test_20260913_121803.json).
+> Script: [`scripts/live_api_test.py`](../scripts/live_api_test.py).
+>
+> **Bagian di bawah adalah arsip penjelasan awal, bukan spesifikasi v2.** Diagram dan
+> contoh smoke test lama dipertahankan untuk konteks. Klaim yang telah dikoreksi
+> dijelaskan di bagian matematika berikut dan laporan audit.
+
 ---
 
 ## 1. Ringkasan Eksekutif & Paradigma Intelligence
@@ -109,10 +135,10 @@ EXCLUDED_SECTOR = "financials"
 ```
 1. **Prioritas Utama (YoY)**:
    - Membandingkan kuartal yang sama pada tahun berjalan terhadap tahun sebelumnya (misal: Q2 2026 vs Q2 2025).
-   - Mengeliminasi sepenuhnya bias musiman (Ramadhan/Lebaran, libur akhir tahun Natal/Tahun Baru, siklus anggaran belanja pemerintah).
+   - Mengurangi musiman kuartalan, tetapi tidak menghilangkan pergeseran Ramadhan/Lebaran, kalender fiskal, dan perubahan bauran usaha.
 2. **Fallback Mulus (QoQ)**:
    - Jika emiten baru melantai di bursa (IPO) atau data historis di bawah 5 kuartal, sistem secara otomatis beralih membandingkan kuartal berjalan terhadap kuartal sebelumnya (misal: Q2 2026 vs Q1 2026).
-   - Metode pencatatan dicatat secara transparan pada metadata provenance: `growth_method: "YoY" | "QoQ"`.
+   - Metode dicatat pada `growth_method`. Sejak v2, QoQ hanya untuk tampilan dan tidak digabungkan dengan YoY dalam growth peer_z. Pasangan YoY dicari berdasarkan periode yang cocok, meskipun hanya dua observasi tersedia.
 
 ### C. Trailing Twelve Months (TTM) untuk Metrik Level
 Metrik yang mengukur efisiensi modal dan valuasi relatif wajib dihitung menggunakan TTM akumulatif, bukan kuartal tunggal yang di-annualisasi:
@@ -133,7 +159,7 @@ Metrik yang mengukur efisiensi modal dan valuasi relatif wajib dihitung mengguna
 | **Laba TTM Negatif / Nol** | `ttm_earnings <= 0` | `pe_ttm = None` (PE bernilai negatif tidak memiliki makna rasio) |
 | **Data Harga Kurang dari 2 Titik** | `len(daily) < 2` atau `close_earliest <= 0` | `price_return = None` |
 | **Data Historis Kuartal < 2** | `len(valid_quarters) < 2` | Semua metrik pertumbuhan diatur ke `None` |
-| **Subsektor Kecil ($n < 3$)** | `n_valid < 3` | Semua skor `peer_z = 0.0` (konservatif: anggap tepat di median) |
+| **Subsektor Kecil ($n < 3$)** | `n_valid < 3` | `peer_z = None`; ketidaktersediaan informasi bukan nilai median |
 
 ---
 
@@ -159,7 +185,7 @@ x_i & \text{lainnya}
 - **Guard Ukuran Sampel ($n < 5$)**: Jika jumlah emiten dalam subsektor $n < 5$, winsorizing ditiadakan ($x_i^* = x_i$) karena pemotongan persentil pada sampel mikro tidak memiliki kekuatan statistik.
 
 ### C. Estimator Lokasi: Sample Median ($\tilde{x}$)
-Median $\tilde{x} = \text{median}(\mathbf{x}^*)$ dipilih sebagai pusat distribusi karena memiliki **Breakdown Point 50%**. Artinya, hingga setengah dari total data di subsektor dapat berupa data korup/outlier ekstrem tanpa mampu menggeser median secara drastis (berbanding terbalik dengan rata-rata aritmetika yang memiliki breakdown point $0\%$).
+Median dipilih karena breakdown point asimptotik mendekati 50%. Ini adalah batas ketahanan terhadap kontaminasi arbitrer, bukan jaminan akurasi ketika hampir setengah sampel rusak. Bias dapat muncul jauh sebelum batas itu tercapai.
 
 ### D. Estimator Skala: Median Absolute Deviation (MAD)
 MAD mengukur dispersi nilai terhadap median:
@@ -172,7 +198,7 @@ $$\text{MAD}(\mathbf{x}^*) = \text{median}\left(\left| x_i^* - \tilde{x} \right|
 #### 1. Masalah pada Raw MAD
 Pada spesifikasi awal beberapa pustaka umum, formula skor-z MAD sering ditulis secara naif:
 $$\text{raw\_z}(x_i) = \frac{x_i - \tilde{x}}{\text{MAD}}$$
-Namun, secara matematis, nilai MAD untuk distribusi simetris kontinu **selalu lebih kecil** daripada deviasi standar $\sigma$.
+Untuk distribusi normal, MAD populasi adalah sekitar $0.67449\sigma$. Hubungan konstanta berikut khusus asumsi normal, bukan semua distribusi simetris.
 
 #### 2. Penurunan Analitis
 Misalkan variabel acak terdistribusi normal standar $Z \sim \mathcal{N}(0, 1)$ dengan fungsi distribusi kumulatif $\Phi(z)$.
@@ -186,7 +212,7 @@ $$\text{MAD} = \Phi^{-1}(0.75) \approx 0.67448975$$
 Untuk distribusi normal umum $X \sim \mathcal{N}(\mu, \sigma^2)$:
 $$\text{MAD}(X) = \Phi^{-1}(0.75) \cdot \sigma \approx 0.6745 \cdot \sigma$$
 
-Agar MAD menjadi **estimator tak-bias yang konsisten (*consistent estimator*)** bagi deviasi standar populasi $\sigma$, kita wajib mengalikannya dengan faktor konsistensi $k$:
+Agar MAD menjadi estimator skala yang **konsisten secara asimptotik di bawah normalitas**, kalikan dengan $k$. Konsisten tidak berarti tak-bias pada sampel kecil:
 $$k = \frac{1}{\Phi^{-1}(0.75)} = \frac{1}{0.67448975} \approx 1.4826022 \dots \approx \mathbf{1.4826}$$
 Maka estimator standar deviasi yang kokoh didefinisikan sebagai:
 $$\hat{\sigma}_{\text{robust}} = 1.4826 \times \text{MAD}$$
@@ -195,14 +221,14 @@ $$\hat{\sigma}_{\text{robust}} = 1.4826 \times \text{MAD}$$
 Jika sistem menggunakan raw MAD tanpa faktor $1.4826$, maka skor-z akan mengalami **inflasi buatan sebesar 48.26%**:
 $$\text{raw\_z} = 1.4826 \times \text{scaled\_z}$$
 
-Simulasi empiris pada semesta 700 emiten IDX terdistribusi di 28 subsektor:
+**Angka arsip yang belum dapat diverifikasi:** draf sebelumnya menyebut simulasi 700 emiten/28 subsektor dengan angka berikut. Skrip, seed, dataset, dan hasil mentah pendukungnya tidak ditemukan pada audit; tabel ini tidak boleh dipakai sebagai bukti empiris IDX.
 
 | Ambang Batas Discrepancy | Persentase Lolos (Raw MAD Tanpa $k$) | Persentase Lolos (Scaled MAD dengan $k=1.4826$) |
 |---|:---:|:---:|
 | **Threshold > 1.0 (Kandidat)** | **26.1% (183 emiten)** $\longrightarrow$ Terlalu banyak noise! | **18.9% (132 emiten)** $\longrightarrow$ Selektif & proporsional |
 | **Threshold > 1.5 (HIGH Priority)** | **15.1% (106 emiten)** $\longrightarrow$ 100+ emiten HIGH priority | **8.6% (60 emiten)** $\longrightarrow$ Target investigasi presisi |
 
-*Kesimpulan*: Tanpa $k=1.4826$, ambang batas 1.0 dan 1.5 kehilangan makna statistiknya. Dengan memasang $k=1.4826$, ambang batas $z=1.0$ secara presisi merepresentasikan **$1\sigma$ outperformance** dan $z=2.0$ merepresentasikan **$2\sigma$ outperformance**, konsisten dengan teori probabilitas modern (Iglewicz & Hoaglin, 1993).
+**Koreksi:** faktor tersebut mengubah unit skala, tetapi tidak menjadikan skor tepat normal ataupun mengalibrasi probabilitas ambang discrepancy. Bukti simulasi yang dapat direproduksi kini berada di [hasil simulasi](research/simulation_results.md).
 
 ---
 
@@ -213,63 +239,94 @@ $$\text{peer\_z}(x_i) = \frac{x_i - \tilde{x}}{\text{scale}}$$
 Di mana $\text{scale}$ ditentukan melalui logika berjenjang (*anti-division-by-zero*):
 $$\text{scale} = \begin{cases}
 1.4826 \times \text{MAD} & \text{jika } \text{MAD} > 0 \\
-0.01 \times |\tilde{x}| & \text{jika } \text{MAD} = 0 \text{ dan } \tilde{x} \ne 0 \\
-0.0 & \text{jika } \text{MAD} = 0 \text{ dan } \tilde{x} = 0
+0.0 & \text{jika } \text{MAD} = 0
 \end{cases}$$
 
 **Aturan Penentuan Skor Akhir:**
-1. Jika ukuran sampel valid $n_{\text{sample}} < 3$: $\text{peer\_z} = 0.0$ (sampel tidak memadai untuk inferensi).
-2. Jika $\text{scale} = 0.0$ (semua emiten bernilai nol atau identik): $\text{peer\_z} = 0.0$ (tidak ada variasi informasi).
+1. Jika ukuran sampel valid $n_{\text{sample}} < 3$: $\text{peer\_z} = \text{None}$.
+2. Jika $\text{scale} = 0.0$: $\text{peer\_z} = \text{None}$. MAD nol juga dapat terjadi ketika mayoritas nilai sama walaupun beberapa nilai berbeda. Fallback 1% median dihapus karena tidak invarian terhadap translasi.
 3. Jika metrik mentah $x_i = \text{None}$: $\text{peer\_z} = \text{None}$.
 
 ### G. Invarian Matematika yang Terbukti Secara Formal
-Implementasi telah dibuktikan melalui unit test suite [`tests/test_stats.py`](file:///Users/rio/Documents/RIO/Pemrograman/my_product/market-intelligence/tests/test_stats.py):
+Implementasi diperiksa pada kasus unit test; ini bukan pembuktian formal atau validasi investasi. Untuk skala positif dan sampel cukup:
 * **Identitas Titik Pusat**: $\text{peer\_z}(\tilde{x}) = 0.0000$ (emiten di median selalu bernilai 0).
 * **Konservasi Tanda Monotonik**: $\text{sgn}(\text{peer\_z}(x_i)) = \text{sgn}(x_i - \tilde{x})$.
-* **Ketahanan terhadap Outlier (Breakdown Guard)**: Lonjakan salah satu emiten hingga $10.000\%$ tidak menggeser nilai z-score emiten lainnya lebih dari batas bounded persentil.
+* **Batas ketahanan**: median/MAD lebih tahan terhadap outlier, tetapi besarnya pergeseran bergantung pada sampel. Numerator memakai nilai mentah, sehingga skor individual tidak dibatasi winsorizing. Klaim batas universal dari unit test draf awal ditarik.
 
 ---
 
-## 5. Bukti Verifikasi Empiris & Benchmarking (ASII)
+## 5. Bukti Verifikasi Empiris — Live API Test (26 Companies, 5 Subsectors)
 
-Engine diuji menggunakan data riil **PT Astra International Tbk (ASII)** dari subsektor `automobiles-components` melalui perintah:
-```bash
-make smoke-test-engine
+Engine diverifikasi menggunakan **live Sectors API** pada 13 September 2026 dengan script
+[`scripts/live_api_test.py`](../scripts/live_api_test.py) dan data YoY (`n_quarters=8`).
+Hasil lengkap tersimpan di [`data/test_results/live_test_20260913_121803.json`](../data/test_results/live_test_20260913_121803.json).
+
+### Universe yang Diuji
+
+| Subsektor | Companies (n) | Growth Method | Status |
+|---|:---:|---|---|
+| automobiles-components | 5 | YoY Q2-2026 vs Q2-2025 | ✅ Normalization working |
+| food-beverage | 6 | YoY Q2-2026 vs Q2-2025 | ✅ Normalization working |
+| oil-gas-coal | 5 | YoY Q2-2026 vs Q2-2025 | ✅ Normalization working |
+| telecommunication | 5 | YoY Q2-2026 vs Q2-2025 | ✅ Normalization working |
+| properties-real-estate | 5 | YoY Q2-2026 vs Q2-2025 | ✅ Normalization working |
+
+### Hasil Ringkasan
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  PROFESSIONAL SCENARIO — Score: 99.9/100                │
+│  26 companies, 5 subsectors, live API + cache           │
+├─────────────────────────────────────────────────────────┤
+│  Data Completeness    : 100.0% (26/26 companies)        │
+│  Metric Reasonability : 99.7% (337/338 checks)          │
+│  Normalization Working: 5/5 subsectors                  │
+│  Good Subsectors      : 5/5                             │
+│  Duration             : 16.7 seconds                   │
+└─────────────────────────────────────────────────────────┘
 ```
 
-### Hasil Perhitungan Nyata vs Nilai Pre-Computed:
+### Contoh Output Per Subsektor: automobiles-components
 
 ```
-============================================================
-SMOKE TEST: Market State Engine (Hari 2)
-============================================================
+Distribution Statistics (n=5, low_sample):
+  revenue_growth  : median=0.0893, MAD=0.0911, scaled_MAD=0.1351
+  earnings_growth : median=-0.0385, MAD=0.1828, scaled_MAD=0.2710
+  margin_change   : median=-0.0100, MAD=0.0091, scaled_MAD=0.0134
+  roe_ttm         : median=0.1384, MAD=0.0356, scaled_MAD=0.0528
+  price_return    : median=0.0327, MAD=0.0174, scaled_MAD=0.0258
 
---- ASII Raw Fundamental Metrics ---
-  Symbol:          ASII
-  Subsector:       automobiles-components
-  Growth Method:   QoQ
-  Growth Period:   2026-06-30 vs 2026-03-31 (QoQ)
-  Price Period:    2026-08-13 to 2026-09-11
+Peer Z-Scores:
+  Sym    zRevGr   zEarnGr  zMargΔ   zROE     zPriceR
+  ASII   -0.684   -0.674   -0.955   -0.674   —
+  AUTO   +0.771   +1.497   +0.674   +0.042   +4.074
+  BOLT   -0.436   +0.000   +2.143   +0.000   -0.535
+  IMAS   +1.019   -2.621   +0.000   -2.509   +0.535
+  SMSM   +0.000   +0.654   -0.014   +2.170   -0.814
 
---- Verifikasi Numerik (Toleransi < 0.01%) ---
-  ✓ revenue_growth:    +0.73%   (Expected: +0.73%)  — EXACT MATCH
-  ✓ earnings_growth:  +14.24%   (Expected: +14.24%) — EXACT MATCH
-  ✓ operating_margin:  10.23%   (Expected: 10.23%)  — EXACT MATCH
-  ✓ margin_change:     +2.21 pp (Expected: +2.21pp) — EXACT MATCH
-  ✓ roe_ttm:           10.28%   (Expected: 10.28%)  — EXACT MATCH
-  ✓ pe_ttm:             6.67x   (Expected: 6.59x)   — MATCH (< 1.2% variasi kapitalisasi pasar)
-
---- Peer Z-Scores (Single Company Subsector n=1) ---
-  z_revenue_growth   = 0.0000 (Expected: 0.0)
-  z_earnings_growth  = 0.0000 (Expected: 0.0)
-  z_margin_change    = 0.0000 (Expected: 0.0)
-  z_roe              = 0.0000 (Expected: 0.0)
-  z_price_return     = 0.0000 (Expected: 0.0)
-
-============================================================
-✅ SMOKE TEST PASSED — Integritas matematika terbukti 100%
-============================================================
+Catatan: ASII dikecualikan dari z_price_return karena period mismatch
+         (data cache dari periode berbeda dengan cohort peer).
 ```
+
+### Perilaku Guard yang Terverifikasi
+
+| Guard | Contoh Kasus | Hasil |
+|---|---|---|
+| **Period mismatch exclusion** | MEDC (Q1-2026, bukan Q2) dikecualikan dari growth peer_z | `normalization_exclusions: {revenue_growth: period_mismatch_or_missing, ...}` |
+| **Price period mismatch** | ASII price dari cache lama dikecualikan | `normalization_exclusions: {price_return: period_mismatch_or_missing}` |
+| **n<3 → None** | Single-company lookup (beginner scenario) | Semua z-scores = None |
+| **MAD=0 → None** | Tidak terjadi pada live test; diverifikasi oleh unit test | `peer_z = None` |
+| **Numerator unbounded** | LPKR earnings_growth=+1115% → z_earnings=+40.0 | Output valid — engine tidak membatasi sinyal ekstrem |
+
+### Catatan Desain: Numerator Tidak Dibatasi
+
+Seperti dijelaskan di §4.G, numerator `(x_i - median)` tidak dibatasi oleh winsorizing.
+Winsorizing hanya diterapkan pada **sampel peer** untuk menghitung median dan MAD yang robust.
+Nilai individual `x_i` sendiri tidak di-clip.
+
+Ini **disengaja**: engine sebagai intelligence tool harus mampu membedakan setiap company,
+termasuk yang memiliki perubahan ekstrem. Membatasi z-score individual akan menghilangkan
+differensiasi yang justru menjadi nilai utama sistem.
 
 ---
 
@@ -285,4 +342,4 @@ SMOKE TEST: Market State Engine (Hari 2)
 | **Struktur Data `CompanyState`** | §6.1 | ✅ Selesai di [`src/engine/models.py`](file:///Users/rio/Documents/RIO/Pemrograman/my_product/market-intelligence/src/engine/models.py) |
 | **Provenance Tracking Lengkap** | §6.1 | ✅ Selesai (`growth_period`, `growth_method`, `price_period`) |
 | **Fail-Safe Offline Cache** | §6.10 | ✅ Selesai di [`src/client/cache.py`](file:///Users/rio/Documents/RIO/Pemrograman/my_product/market-intelligence/src/client/cache.py) |
-| **Test Coverage & Zero Warnings** | §10 | ✅ 84/84 tests pass, 0 ruff errors, 0 pyright errors |
+| **Test Coverage & Zero Warnings** | §10 | ✅ 104/104 tests pass, 0 ruff errors, 0 pyright errors |
