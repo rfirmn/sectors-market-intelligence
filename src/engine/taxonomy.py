@@ -121,7 +121,13 @@ def build_universe(client: Any) -> dict[str, list[CompanyInfo]]:
     for sub_info in non_fin:
         sector = sub_info["sector"]
         subsector = sub_info["subsector"]
-        companies = _fetch_all_companies_in_subsector(client, sector, subsector)
+        try:
+            companies = _fetch_all_companies_in_subsector(client, sector, subsector)
+        except Exception as error:
+            # A universe snapshot may be partial under API throttling. Keep
+            # successful subsectors rather than discarding the entire scan.
+            logger.warning("Taxonomy: failed subsector '%s': %s", subsector, error)
+            continue
 
         if not companies:
             logger.warning("Taxonomy: subsector '%s' has 0 companies, skipping", subsector)
@@ -150,6 +156,7 @@ def _fetch_all_companies_in_subsector(
     Paginates until has_next is False or safety cap is reached.
     """
     companies: list[CompanyInfo] = []
+    seen_symbols: set[str] = set()
     offset = 0
 
     while len(companies) < _MAX_COMPANIES_PER_SUBSECTOR:
@@ -180,9 +187,16 @@ def _fetch_all_companies_in_subsector(
             if not raw_symbol:
                 continue
 
+            symbol = strip_jk_suffix(raw_symbol)
+            if symbol in seen_symbols:
+                logger.warning(
+                    "Taxonomy: duplicate symbol %s in subsector %s ignored", symbol, subsector
+                )
+                continue
+            seen_symbols.add(symbol)
             companies.append(
                 CompanyInfo(
-                    symbol=strip_jk_suffix(raw_symbol),
+                    symbol=symbol,
                     company_name=item.get("company_name"),
                     sector=sector,
                     subsector=subsector,
@@ -192,6 +206,11 @@ def _fetch_all_companies_in_subsector(
         if not has_next or not results:
             break
 
+        if not isinstance(next_offset, int) or next_offset <= offset:
+            logger.warning(
+                "Taxonomy: non-advancing pagination for subsector %s, stopping", subsector
+            )
+            break
         offset = next_offset
 
     return companies

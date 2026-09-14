@@ -119,7 +119,7 @@ NUMERICAL CHALLENGE ENGINE        (§6.7 — 3 skenario, dikalibrasi dari peer d
 OPPORTUNITY MEMO                  (§6.8 — output akhir)
 ```
 
-Delapan blok ini adalah keseluruhan sistem. Tidak ada multi-agent swarm, tidak ada ML pipeline terpisah, tidak ada layer personalisasi.
+Delapan blok ini adalah keseluruhan sistem. Tidak ada multi-agent swarm atau ML pipeline terpisah. Discovery menyediakan *Research Mandate* terstruktur agar pengguna dapat mengurutkan peluang riset sesuai kriteria yang eksplisit tanpa mengubah ground truth numerik.
 
 ---
 
@@ -176,7 +176,7 @@ CompanyState
 
 ### 6.2 Opportunity Discovery Engine — Variant Perception Detector
 
-**Satu jenis signal:** Fundamental–Price Dislocation. Dua jenis signal lain (Peer Divergence, Financial State Change) tetap dihapus dari MVP (§7).
+**Signal dasar:** Fundamental–Price Dislocation. Discovery juga dapat menyajikan lensa growth, profitabilitas operasional, dan PB relatif sebagai kriteria ranking yang dipilih pengguna. Keempatnya adalah screen untuk prioritas riset, bukan prediksi return.
 
 **Definisi discrepancy (formula tetap, ditentukan sebelum lihat hasil):**
 ```
@@ -206,17 +206,11 @@ menghapus selection bias.
 
 ---
 
-### 6.3 Research Priority
+### 6.3 Research Priority dan Research Mandate
 
-```
-priority_score = discrepancy   (dari §6.2, angka yang sama, tidak dihitung ulang)
+`discrepancy` tetap satu-satunya label HIGH/MEDIUM dengan threshold tetap pada §6.2. Untuk ranking yang dipersonalisasi, pengguna memilih preset atau bobot eksplisit untuk lensa dislocation, growth, profitability, dan value. Mesin menghitung percentile empiris pada cohort subsektor lengkap sebelum filter mandate diterapkan, lalu menghitung `research_fit = 100 × Σ(weight × lens_score)`.
 
-Label:
-  discrepancy > 1.5  →  HIGH
-  1.0 – 1.5           →  MEDIUM
-```
-
-Satu formula, satu angka, tidak ada breakdown persentase per komponen. Dipakai untuk mengurutkan kandidat kecil di Opportunity Feed.
+Mandate dapat membatasi universe, metrik raw, market cap, usia data, dan konsentrasi subsektor. Semua filter bersifat transparan; data yang hilang tidak diimputasi dan hasil kosong tidak melonggarkan kriteria. Skor fit bukan probabilitas dan tidak mengganti label discrepancy.
 
 ---
 
@@ -397,7 +391,6 @@ Tidak ada filter kompleks, tidak ada halaman setting, tidak ada akun/login.
 | Komponen yang dihapus | Alasan |
 |---|---|
 | Signal tambahan (Peer Divergence, Financial State Change) | Satu signal yang dijelaskan mendalam > tiga signal dangkal. |
-| Layer personalisasi "Research Mandate" | Tidak menambah skor kriteria manapun; loop inti tidak butuh ini. |
 | Loop riset iteratif + stopping-condition logic | Satu pass yang solid lebih andal untuk demo. |
 | Model prediktif penuh dari broker/foreign flow (GNN, dsb.) | Confirmation layer di §6.5 sudah menangkap nilai intinya dengan satu cek arah; model penuh menambah risiko tanpa menambah bobot penilaian yang sepadan. |
 | ML anomaly ranking / clustering / regime detection | Track menyatakan ML opsional; risiko lebih besar dari manfaatnya. |

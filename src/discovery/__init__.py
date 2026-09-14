@@ -1,8 +1,20 @@
-"""Opportunity Discovery Engine (Hari 3).
+"""Pure domain services for personalized opportunity discovery."""
 
-Responsibilities:
-- Calculate fundamental_z and price_z
-- Compute discrepancy = fundamental_z - price_z
-- Apply a priori fixed thresholds (1.0 = Candidate, 1.5 = HIGH Priority)
-- Rank top opportunities across non-financial IDX universe
-"""
+from src.discovery.discovery_engine import DiscoveryEngine, discover_opportunities
+from src.discovery.models import (
+    DiscoveryResult,
+    EvidenceStandard,
+    LensName,
+    PresetName,
+    ResearchMandate,
+)
+
+__all__ = [
+    "DiscoveryEngine",
+    "DiscoveryResult",
+    "EvidenceStandard",
+    "LensName",
+    "PresetName",
+    "ResearchMandate",
+    "discover_opportunities",
+]

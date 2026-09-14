@@ -269,10 +269,13 @@ class SectorsClient:
         Endpoint: GET /v2/companies/
         """
         params: dict[str, Any] = {"limit": limit, "offset": offset}
+        clauses: list[str] = []
         if sector:
-            params["sector"] = sector
+            clauses.append(f"sector = '{sector.replace(chr(39), chr(39) * 2)}'")
         if sub_sector:
-            params["sub_sector"] = sub_sector
+            clauses.append(f"sub_sector = '{sub_sector.replace(chr(39), chr(39) * 2)}'")
+        if clauses:
+            params["where"] = " and ".join(clauses)
         return self.request("companies/", params=params, force_refresh=force_refresh)
 
     def get_financials_quarterly(

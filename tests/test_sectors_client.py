@@ -120,3 +120,18 @@ def test_convenience_methods(client: SectorsClient):
 
     flow = client.get_foreign_flow("BBCA")
     assert flow[0]["net_foreign"] == 5000000
+
+
+@respx.mock
+def test_companies_subsector_uses_supported_where_parameter(client: SectorsClient):
+    """The companies screener accepts ``where``, not a raw sub_sector query key."""
+    route = respx.get(
+        "https://api.sectors.app/v2/companies/",
+        params={"limit": "200", "offset": "0", "where": "sub_sector = 'software-it-services'"},
+    ).respond(200, json={"results": [], "pagination": {"has_next": False}})
+
+    assert client.get_companies(sub_sector="software-it-services", limit=200) == {
+        "results": [],
+        "pagination": {"has_next": False},
+    }
+    assert route.called

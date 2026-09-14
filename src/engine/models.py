@@ -106,6 +106,22 @@ class CompanyState:
     data_timestamp: str | None = None
     normalization_exclusions: dict[str, str] = field(default_factory=dict)
 
+    # Bounded Day 3 search context. These fields are descriptive metadata and
+    # do not change any Day 2 raw-metric or peer-normalization formula.
+    market_cap: float | None = None
+    market_cap_date: str | None = None
+    latest_equity: float | None = None
+    financial_period: str | None = None
+    price_end_date: str | None = None
+    traded_value_proxy: float | None = None
+    traded_value_observation_count: int = 0
+    # The daily API's volume unit is not yet verified. Consumers must not
+    # enable a traded-value filter while this remains false.
+    volume_unit_verified: bool = False
+    # True when the quarter used as the earnings-growth comparison had a
+    # negative earnings base, so a positive growth figure needs context.
+    earnings_growth_from_loss_base: bool = False
+
 
 @dataclass
 class MetricDistribution:

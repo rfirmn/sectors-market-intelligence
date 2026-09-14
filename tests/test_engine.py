@@ -297,3 +297,64 @@ def test_normalization_excludes_incomparable_periods_without_losing_raw_data():
     assert profile.distributions["revenue_growth"].n_valid == 4
     assert profile.distributions["price_return"].n_valid == 5
     assert profile.normalization_periods["price_return"] == "2026-08-11 to 2026-09-09"
+
+
+def test_explicit_universe_excludes_financials_and_deduplicates_symbols():
+    universe = {
+        "banks": [CompanyInfo("BBCA", "Bank", "financials", "banks")],
+        "auto": [CompanyInfo("ASII", "Astra", "consumer-cyclicals", "auto")],
+        "duplicate": [CompanyInfo("ASII", "Astra duplicate", "energy", "duplicate")],
+    }
+    data = {
+        "ASII": {
+            "quarterly": _make_quarterly(50e12, 5e12, 7e12, 150e12),
+            "daily": _make_daily(5000),
+        }
+    }
+
+    result = _make_mock_engine(universe, data).compute_market_state(
+        universe, price_start="2026-08-11", price_end="2026-09-09"
+    )
+
+    assert [company.symbol for company in result.companies] == ["ASII"]
+    assert result.universe_stats.total_companies_universe == 1
+    assert result.universe_stats.total_excluded_financial == 1
+    assert any("duplicate symbol" in note for note in result.methodology_notes)
+
+
+def test_company_context_and_explicit_daily_window_are_exposed():
+    universe = {
+        "auto": [CompanyInfo("ASII", "Astra", "consumer-cyclicals", "auto")],
+    }
+    daily = [
+        {
+            "date": f"2026-08-{day:02d}",
+            "close": 100.0 + day,
+            "volume": 10.0,
+            "market_cap": 1_000_000.0 + day,
+        }
+        for day in range(1, 16)
+    ]
+    data = {
+        "ASII": {
+            "quarterly": _make_quarterly(50e12, 5e12, 7e12, 150e12),
+            "daily": daily,
+        }
+    }
+    engine = _make_mock_engine(universe, data)
+
+    result = engine.compute_market_state(
+        universe, price_start="2026-08-01", price_end="2026-08-30"
+    )
+
+    company = result.companies[0]
+    assert company.financial_period == "2026-06-30"
+    assert company.market_cap == 1_000_015.0
+    assert company.market_cap_date == "2026-08-15"
+    assert company.price_end_date == "2026-08-15"
+    assert company.traded_value_observation_count == 15
+    assert company.traded_value_proxy is not None
+    assert company.volume_unit_verified is False
+    engine.client.get_daily_transactions.assert_called_once_with(
+        "ASII", start="2026-08-01", end="2026-08-30"
+    )

@@ -54,6 +54,18 @@ market-intelligence/
 | `make lint` | Validasi kode dengan `ruff` dan `pyright` |
 | `make format` | Otomatis rapikan format kode |
 
+### Discovery snapshot dan pencarian
+
+Hari 3 menyimpan market state sebagai snapshot lokal yang dapat diputar ulang. Pencarian hanya membaca snapshot sehingga perubahan watchlist atau filter tidak mengubah cohort peer atau angka dasar.
+
+```bash
+uv run python scripts/run_discovery_scan.py capture --mode fallback
+uv run python scripts/run_discovery_scan.py search SNAPSHOT_ID --mandate mandate.json
+uv run python scripts/run_discovery_scan.py validate SNAPSHOT_ID
+```
+
+`mandate.json` memakai `ResearchMandate` terstruktur dengan preset `dislocation`, `growth`, `profitability`, `value`, atau `custom`. Nilai growth, return, dan margin memakai rasio desimal (`0.15` berarti 15%). Hasil discovery adalah prioritas riset, bukan rekomendasi atau prediksi return.
+
 ---
 
 ### Memulai Pengujian

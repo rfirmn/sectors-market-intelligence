@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 import math
 from datetime import date
+from statistics import median
 from typing import Any
 
 from src.engine.models import MetricSet
@@ -195,6 +196,75 @@ def _validated_daily(daily: list[dict[str, Any]]) -> list[tuple[date, dict[str, 
 def _are_adjacent_quarters(newer: date, older: date) -> bool:
     """Whether two reporting dates are one calendar quarter apart."""
     return (newer.year * 12 + newer.month) - (older.year * 12 + older.month) == 3
+
+
+def extract_market_context(
+    quarterly: list[dict[str, Any]], daily: list[dict[str, Any]]
+) -> dict[str, float | int | str | bool | None]:
+    """Extract bounded provenance and trading context without changing metrics.
+
+    The proxy is the median of at most the latest 20 valid ``close * volume``
+    observations. It is intentionally retained with ``volume_unit_verified``
+    false: the source volume unit needs verification before a caller can use
+    the value as a filter.
+    """
+    validated_quarters = _validated_quarters(quarterly)
+    validated_daily = _validated_daily(daily)
+
+    latest_quarter = validated_quarters[0] if validated_quarters else None
+    financial_period = latest_quarter[0].isoformat() if latest_quarter else None
+    latest_equity = (
+        _finite_number(latest_quarter[1].get("total_equity")) if latest_quarter else None
+    )
+
+    market_cap: float | None = None
+    market_cap_date: str | None = None
+    for observation_date, observation in reversed(validated_daily):
+        value = _finite_number(observation.get("market_cap"))
+        if value is not None and value >= 0:
+            market_cap = float(value)
+            market_cap_date = observation_date.isoformat()
+            break
+
+    price_end_date = validated_daily[-1][0].isoformat() if validated_daily else None
+    traded_values: list[float] = []
+    for _, observation in validated_daily[-20:]:
+        close = _finite_number(observation.get("close"))
+        volume = _finite_number(observation.get("volume"))
+        if close is None or volume is None or close <= 0 or volume < 0:
+            continue
+        try:
+            traded_value = close * volume
+        except OverflowError:
+            continue
+        if math.isfinite(traded_value):
+            traded_values.append(float(traded_value))
+
+    comparison: dict[str, Any] | None = None
+    if latest_quarter is not None and len(validated_quarters) >= 2:
+        latest_date, latest = latest_quarter
+        comparison = _find_yoy_quarter(
+            [quarter for _, quarter in validated_quarters], latest.get("date", "")
+        )
+        if comparison is None and _are_adjacent_quarters(latest_date, validated_quarters[1][0]):
+            comparison = validated_quarters[1][1]
+    comparison_earnings = (
+        _finite_number(comparison.get("earnings")) if comparison is not None else None
+    )
+
+    return {
+        "market_cap": market_cap,
+        "market_cap_date": market_cap_date,
+        "latest_equity": float(latest_equity) if latest_equity is not None else None,
+        "financial_period": financial_period,
+        "price_end_date": price_end_date,
+        "traded_value_proxy": float(median(traded_values)) if len(traded_values) >= 15 else None,
+        "traded_value_observation_count": len(traded_values),
+        "volume_unit_verified": False,
+        "earnings_growth_from_loss_base": (
+            comparison_earnings is not None and comparison_earnings < 0
+        ),
+    }
 
 
 # ──────────────────────────────────────────────────────────────────────

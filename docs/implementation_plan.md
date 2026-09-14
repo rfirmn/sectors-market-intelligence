@@ -1,5 +1,7 @@
 # Implementation Plan — Hari 3: Opportunity Discovery & Priority Ranking Engine
 
+> **Superseded implementation note:** the initial single-score plan below is retained as historical context. The implemented Day 3 contract is a deterministic `ResearchMandate` screener: frozen snapshot cohorts, dislocation/growth/profitability/value lenses, structured filters, weighted `research_fit`, and replay-only API/CLI search. `docs/project.md` and `README.md` are the current specification and usage reference.
+
 ## 1. Konteks & Tujuan
 
 Hari 2 telah tuntas membangun pondasi matematika dan normalisasi statistik cross-sectional:

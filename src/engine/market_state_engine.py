@@ -15,11 +15,11 @@ from __future__ import annotations
 import logging
 from collections import Counter
 from dataclasses import replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from src.client.sectors_client import SectorsClient
-from src.engine.metrics import calculate_metrics
+from src.engine.metrics import calculate_metrics, extract_market_context
 from src.engine.models import (
     CompanyInfo,
     CompanyState,
@@ -30,7 +30,7 @@ from src.engine.models import (
     UniverseStats,
 )
 from src.engine.stats import compute_subsector_zscores, is_finite_number
-from src.engine.taxonomy import build_universe
+from src.engine.taxonomy import build_universe, is_financial_sector
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,65 @@ logger = logging.getLogger(__name__)
 DEFAULT_N_QUARTERS = 8
 """Number of quarters to request from the API. 8 enables YoY comparison
 (latest quarter vs same quarter in prior year)."""
+
+DEFAULT_PRICE_WINDOW_DAYS = 30
+"""Inclusive calendar window used for every company's daily-price request."""
+
+
+def _as_date(value: date | str | None, name: str) -> date | None:
+    if value is None or isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = date.fromisoformat(value)
+        except ValueError as error:
+            raise ValueError(f"{name} must be an ISO date") from error
+        if parsed.isoformat() == value:
+            return parsed
+    raise ValueError(f"{name} must be an ISO date")
+
+
+def _price_window(
+    price_start: date | str | None, price_end: date | str | None
+) -> tuple[date, date]:
+    """Return an explicit inclusive 30-day window unless both bounds are supplied."""
+    end = _as_date(price_end, "price_end") or datetime.now(UTC).date()
+    start = _as_date(price_start, "price_start") or (end - timedelta(days=DEFAULT_PRICE_WINDOW_DAYS - 1))
+    if start > end:
+        raise ValueError("price_start must be on or before price_end")
+    return start, end
+
+
+def _sanitize_universe(
+    universe: dict[str, list[CompanyInfo]],
+) -> tuple[dict[str, list[CompanyInfo]], int, int]:
+    """Reject financials and globally deduplicate symbols before data fetching.
+
+    A symbol assigned to more than one subsector is kept only at its first
+    occurrence. This prevents metadata keyed by symbol from silently being
+    overwritten by a later subsector assignment.
+    """
+    sanitized: dict[str, list[CompanyInfo]] = {}
+    seen_symbols: set[str] = set()
+    excluded_financial = 0
+    duplicates = 0
+    for subsector, companies in universe.items():
+        accepted: list[CompanyInfo] = []
+        for company in companies:
+            if is_financial_sector(company.sector):
+                excluded_financial += 1
+                continue
+            if company.symbol in seen_symbols:
+                duplicates += 1
+                logger.warning(
+                    "Universe: duplicate symbol %s in subsector %s ignored", company.symbol, subsector
+                )
+                continue
+            seen_symbols.add(company.symbol)
+            accepted.append(company)
+        if accepted:
+            sanitized[subsector] = accepted
+    return sanitized, excluded_financial, duplicates
 
 
 def _comparable_metrics(
@@ -113,6 +172,8 @@ class MarketStateEngine:
         self,
         symbol: str,
         n_quarters: int = DEFAULT_N_QUARTERS,
+        price_start: date | None = None,
+        price_end: date | None = None,
     ) -> dict[str, Any]:
         """Fetch quarterly financials + daily prices for one company.
 
@@ -132,7 +193,11 @@ class MarketStateEngine:
             logger.warning("Failed to fetch quarterly data for %s: %s", symbol, e)
 
         try:
-            daily = self.client.get_daily_transactions(symbol)
+            daily = self.client.get_daily_transactions(
+                symbol,
+                start=price_start.isoformat() if price_start else None,
+                end=price_end.isoformat() if price_end else None,
+            )
         except Exception as e:
             logger.warning("Failed to fetch daily data for %s: %s", symbol, e)
 
@@ -142,6 +207,8 @@ class MarketStateEngine:
         self,
         universe: dict[str, list[CompanyInfo]] | None = None,
         n_quarters: int = DEFAULT_N_QUARTERS,
+        price_start: date | str | None = None,
+        price_end: date | str | None = None,
     ) -> MarketStateResult:
         """Execute the full Hari 2 pipeline.
 
@@ -155,12 +222,17 @@ class MarketStateEngine:
         Args:
             universe: Pre-built universe map. If None, builds from API.
             n_quarters: Number of quarters to request (default 8 for YoY).
+            price_start: Inclusive ISO date for daily data. Defaults to 30
+                calendar days before ``price_end``.
+            price_end: Inclusive ISO date for daily data. Defaults to today
+                in UTC.
 
         Returns:
             MarketStateResult with all CompanyState objects and profiles.
         """
         timestamp = datetime.now(UTC).isoformat()
         methodology_notes: list[str] = []
+        resolved_price_start, resolved_price_end = _price_window(price_start, price_end)
 
         # ── Step 1: Universe ────────────────────────────────────
         if universe is None:
@@ -168,6 +240,14 @@ class MarketStateEngine:
             universe = self.build_universe_map()
         else:
             logger.info("Step 1/4: Using pre-built universe (%d subsectors)", len(universe))
+
+        universe, excluded_financial, duplicate_symbols = _sanitize_universe(universe)
+        if excluded_financial:
+            logger.info("Universe: excluded %d financial company entries", excluded_financial)
+        if duplicate_symbols:
+            methodology_notes.append(
+                f"universe_deduplication: ignored {duplicate_symbols} duplicate symbol assignment(s)"
+            )
 
         total_companies = sum(len(v) for v in universe.values())
         logger.info(
@@ -196,7 +276,12 @@ class MarketStateEngine:
                         total_companies,
                     )
 
-                raw_data = self.fetch_company_data(ci.symbol, n_quarters)
+                raw_data = self.fetch_company_data(
+                    ci.symbol,
+                    n_quarters,
+                    price_start=resolved_price_start,
+                    price_end=resolved_price_end,
+                )
                 quarterly = raw_data.get("quarterly", [])
                 daily = raw_data.get("daily", [])
 
@@ -204,15 +289,7 @@ class MarketStateEngine:
                 metrics, growth_method, growth_period, price_period = calculate_metrics(
                     quarterly, daily
                 )
-
-                financial_dates = []
-                for quarter in quarterly:
-                    if not isinstance(quarter, dict):
-                        continue
-                    try:
-                        financial_dates.append(date.fromisoformat(quarter.get("date", "")))
-                    except (TypeError, ValueError):
-                        continue
+                context = extract_market_context(quarterly, daily)
 
                 subsector_metrics[subsector][ci.symbol] = metrics
                 company_metadata[ci.symbol] = {
@@ -220,9 +297,8 @@ class MarketStateEngine:
                     "growth_method": growth_method,
                     "growth_period": growth_period,
                     "price_period": price_period,
-                    "financial_period": max(financial_dates).isoformat()
-                    if financial_dates
-                    else None,
+                    "financial_period": context["financial_period"],
+                    "context": context,
                 }
 
         # ── Step 4: Normalize per subsector ─────────────────────
@@ -278,6 +354,17 @@ class MarketStateEngine:
                     price_period=meta["price_period"],
                     data_timestamp=timestamp,
                     normalization_exclusions=exclusions[sym],
+                    market_cap=meta["context"]["market_cap"],
+                    market_cap_date=meta["context"]["market_cap_date"],
+                    latest_equity=meta["context"]["latest_equity"],
+                    financial_period=meta["context"]["financial_period"],
+                    price_end_date=meta["context"]["price_end_date"],
+                    traded_value_proxy=meta["context"]["traded_value_proxy"],
+                    traded_value_observation_count=meta["context"]["traded_value_observation_count"],
+                    volume_unit_verified=meta["context"]["volume_unit_verified"],
+                    earnings_growth_from_loss_base=meta["context"][
+                        "earnings_growth_from_loss_base"
+                    ],
                 )
                 all_companies.append(cs)
 
@@ -295,6 +382,12 @@ class MarketStateEngine:
             "Each metric family uses its largest exact-period cohort (latest on ties)."
         )
         methodology_notes.append(
+            "daily_price_window="
+            f"{resolved_price_start.isoformat()} to {resolved_price_end.isoformat()} (inclusive, requested); "
+            "traded-value proxy uses up to 20 dated observations and is not filterable until "
+            "the source volume unit is verified."
+        )
+        methodology_notes.append(
             "methodology_version=2026-09-13-validity-v2; n<3 or MAD=0 gives None; "
             "n=3..7 is flagged low_sample. Raw numerators remain unbounded. "
             "Scores are descriptive, not calibrated probabilities or validated alpha."
@@ -308,7 +401,7 @@ class MarketStateEngine:
             total_subsectors_scanned=len(universe),
             total_companies_universe=total_companies,
             total_with_data=total_with_data,
-            total_excluded_financial=0,  # counted during taxonomy phase
+            total_excluded_financial=excluded_financial,
         )
 
         result = MarketStateResult(

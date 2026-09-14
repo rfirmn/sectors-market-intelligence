@@ -23,6 +23,7 @@ from src.engine.metrics import (
     _find_yoy_quarter,
     _safe_growth,
     calculate_metrics,
+    extract_market_context,
 )
 
 # ──────────────────────────────────────────────────────────────────────
@@ -491,3 +492,52 @@ class TestCalculateMetrics:
         ]
         metrics, _, _, _ = calculate_metrics(quarterly, [])
         assert metrics.revenue_growth is None  # prev < 1M threshold
+
+
+def test_market_context_uses_latest_twenty_valid_traded_values_and_marks_loss_base():
+    quarterly = [
+        {
+            "date": "2026-06-30",
+            "revenue": 100e9,
+            "earnings": 10e9,
+            "operating_pnl": 20e9,
+            "total_equity": 50e9,
+        },
+        {
+            "date": "2025-06-30",
+            "revenue": 90e9,
+            "earnings": -5e9,
+            "operating_pnl": 10e9,
+            "total_equity": 45e9,
+        },
+    ]
+    daily = [
+        {
+            "date": f"2026-08-{day:02d}",
+            "close": float(day),
+            "volume": 1.0,
+            "market_cap": float(day * 100),
+        }
+        for day in range(1, 22)
+    ]
+
+    context = extract_market_context(quarterly, daily)
+
+    assert context["financial_period"] == "2026-06-30"
+    assert context["market_cap"] == 2100.0
+    assert context["market_cap_date"] == "2026-08-21"
+    assert context["price_end_date"] == "2026-08-21"
+    assert context["traded_value_observation_count"] == 20
+    assert context["traded_value_proxy"] == pytest.approx(11.5)
+    assert context["volume_unit_verified"] is False
+    assert context["earnings_growth_from_loss_base"] is True
+
+
+def test_market_context_requires_fifteen_valid_traded_values():
+    daily = [
+        {"date": f"2026-08-{day:02d}", "close": 100.0, "volume": 10.0}
+        for day in range(1, 15)
+    ]
+    context = extract_market_context([], daily)
+    assert context["traded_value_observation_count"] == 14
+    assert context["traded_value_proxy"] is None
